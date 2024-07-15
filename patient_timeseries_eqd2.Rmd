@@ -1,0 +1,100 @@
+---
+title: "patient_timeseries_eqd2.rmd"
+author: "Grace Liu"
+date: "2024-07-12"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r load, echo=FALSE}
+
+library(data.table)
+library(dplyr)
+library(patchwork)
+library(faraway)
+library(ggExtra)
+library(GGally)
+library(ggsci)
+library(ggplot2)
+library(ggpubr)
+library(ggthemr)
+library(gridExtra)
+library(gt)
+library(gtsummary)
+library(rlang)
+library(scales)
+library(survival)
+library(survminer)
+library(readxl)
+library(reshape2)
+library(tidyverse)
+library(rmdformats)
+library(prettydoc)
+library(hrbrthemes)
+library(tint)
+library(tufte)
+
+ggthemr("fresh")
+
+load("/Users/graceliu/bratman/timeseries/data/2024-06-21_head-neck-dataframes.Rdata")
+load('/Users/graceliu/bratman/timeseries/data/HPV_analysis_dataframes.Rdata')
+
+```
+
+
+
+```{r preprocessing, echo=FALSE}
+
+df_patient_timeseries_eqd2 <- merge(
+  df_ctdna_eqd2_radiomic_clinical %>% select(patient, timepoint, EQD2, gtv_primary, sum_gtv_nodes),
+  df_hpvseq %>% select(patient, timepoint, seq_copies_mL),
+  by = c("patient", "timepoint")) %>%
+  filter(timepoint != "3 months") %>%
+  mutate(log_seq_copies_mL = log1p(seq_copies_mL))
+
+```
+
+
+```{r HN3294, echo=FALSE}
+
+ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN3294"), aes(x = EQD2, y = seq_copies_mL)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "seq_copies_mL vs EQD2 for Patient HN3294",
+       x = "EQD2",
+       y = "seq_copies_mL")
+
+ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN3294"), aes(x = EQD2, y = log_seq_copies_mL)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "log_seq_copies_mL vs EQD2 for Patient HN3294",
+       x = "EQD2",
+       y = "log_seq_copies_mL")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

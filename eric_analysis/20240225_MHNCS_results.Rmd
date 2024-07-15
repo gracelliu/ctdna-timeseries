@@ -1,0 +1,867 @@
+---
+title: "Untitled"
+output: html_document
+date: "2024-02-24"
+---
+
+```{r setup, include=FALSE,echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+library(caret)
+library(DataExplorer)
+library(data.table)
+library(dplyr)
+library(faraway)
+library(forestmodel)
+library(ggplot2)
+library(ggpubr)
+library(ggthemr)
+library(gridExtra)
+library(rlang)
+library(survival)
+library(survminer)
+library(readxl)
+library(tidyverse)
+
+
+
+##############
+# set plot theme
+##############
+
+ggthemr("dust")
+```
+
+```{r Download Data}
+
+###############
+# OPC
+###############
+
+df_OPC <- read_excel("~/Documents/1 Bratman/head_neck_analysis_lucas/data/Quantification/summ_OPC.v6.xlsx")
+colnames(df_OPC)[2] = c("patient")
+
+###############
+# Clinical Data
+###############
+
+df_clinical_data = fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/clinical_data.tsv")
+df_gtv_nodes <- fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/df_gtv_nodes.tsv")
+
+df_gtv_primary <- fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/df_gtv_primary.tsv")
+
+
+###############
+# df_sero_processing
+###############
+
+df_sero = fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/serology_overlap_cases.csv")
+# Create dataframe with MFI values (from literature )
+mfi_df <- data.frame(
+  Genotype = c("HPV6", "HPV6", "HPV6", "HPV11", "HPV11", "HPV11", "HPV16", "HPV16", "HPV16", "HPV16", "HPV16", "HPV16", "HPV18", "HPV18", "HPV18", "HPV31", "HPV31", "HPV31", "HPV33", "HPV33", "HPV33", "HPV45", "HPV45", "HPV45", "HPV52", "HPV52", "HPV52"),
+  Gene = c("E6", "E7", "L1", "E6", "E7", "L1", "E1", "E2", "E4", "E6", "E7", "L1", "E6", "E7", "L1", "E6", "E7", "L1", "E6", "E7", "L1", "E6", "E7", "L1", "E6", "E7", "L1"),
+  MFI = c(500, 364, 571, 260, 200, 500, 200, 679, 876, 484, 548, 422, 243, 789, 394, 890, 200, 712, 253, 500, 515, 249, 200, 368, 271, 200, 547)
+)
+
+mfi_df <- mfi_df %>%
+  mutate(HPV_genotype = paste(Genotype, Gene, sep = "")) %>% 
+  dplyr::select(HPV_genotype,MFI)
+
+ab_names = mfi_df$HPV_genotype
+
+df_sero <- df_sero %>%
+  rename_with(~sub(" fl$", "", .)) %>%
+  rename_with(~ifelse(grepl("^[0-9]", .), paste0("HPV", .), .))
+
+
+for(col_name in names(df_sero)) {
+  if(col_name %in% mfi_df$HPV_genotype) {
+    # Find the matching MFI value
+    matching_MFI <- mfi_df$MFI[mfi_df$HPV_genotype == col_name]
+    # Update values in df_sero based on the condition
+    df_sero[[col_name]] <- ifelse(df_sero[[col_name]] < matching_MFI, 0, df_sero[[col_name]])
+  }
+}
+
+###############
+
+
+# Right join all dataframes
+df_combined_clin_OPC_sero <- df_sero %>%
+  left_join(df_gtv_primary, by = 'patient') %>%
+  left_join(df_gtv_nodes, by = 'patient') %>%
+  left_join(df_clinical_data, by = 'patient') %>%
+  left_join(dplyr::select(df_OPC,c("patient","HPV_corrected","seq_copies_mL_corrected1.67","IntegrationHigh","Integration_score")), by = 'patient')
+
+df_combined_clin_OPC_sero = df_combined_clin_OPC_sero[!duplicated(df_combined_clin_OPC_sero$patient), ]
+
+
+remove(list = c("df_OPC","df_clinical_data","df_gtv_nodes","df_sero","df_gtv_primary","mfi_df"))
+
+```
+
+## Serology Analysis
+
+### Comparison to Clinical Features
+
+### Check Normality
+
+```{r, warning=FALSE,eval=FALSE}
+###############
+#test to see if data is normally distributed
+##############
+
+variables_abs <- c("seq_copies_mL_corrected1.67")
+
+
+df_abs_normaltest <- data.frame(variable = character(),
+                                ks_pvalue = numeric(),
+                                shapiro_pvalue = numeric(),
+                                stringsAsFactors = FALSE)
+
+for(abs in variables_abs) {
+    print(abs)
+    abs_data <- df_combined_clin_OPC_sero[[abs]]
+    
+    # Kolmogorov-Smirnov test
+    ks_test <- ks.test(abs_data, "pnorm", mean=mean(abs_data), sd=sd(abs_data))
+    
+    # Shapiro-Wilk test
+    shapiro_test <- shapiro.test(abs_data)
+    
+    # Append to the results data frame
+    temp_df <- data.frame(variable = abs,
+                          ks_pvalue = ks_test$p.value,
+                          shapiro_pvalue = shapiro_test$p.value)
+    df_abs_normaltest <- rbind(df_abs_normaltest, temp_df)
+}
+df_abs_normaltest
+#all looks good
+
+```
+
+### Exploratory Variable Analysis
+
+```{r}
+
+#############
+# plot_variable function
+#############
+
+plot_variable <- function(data, response_name, var_name) {
+  # Determine unique values of var_name
+  unique_values <- unique(data[[response_name]])
+  # Create pairwise combinations of those unique values
+  comparisons_list <- combn(unique_values, 2, simplify = FALSE)
+   
+  p <- ggplot(data, aes(x = !!sym(response_name), y = !!sym(var_name))) +
+       geom_boxplot(aes(fill = !!sym(var_name)))
+  
+  p <- p + labs(x = response_name, y = var_name) +
+    theme(legend.position = "none")
+
+  # Log scale for the y-axis
+  p <- p + scale_y_log10()
+
+  # Add pairwise comparisons to the plot, choose anova because these are normally distributed data
+  # p <- p + stat_compare_means(comparisons = comparisons_list) + stat_compare_means(label.y = 5)
+  p <- p + stat_compare_means(method = "wilcox.test") +
+    stat_compare_means(label = "p.signif", method = "t.test", ref.group = ".all.")
+  
+  return(p)
+}
+
+##############
+# Serology
+##############
+
+# List of variables
+ab_names = colnames(df_combined_clin_OPC_sero)
+
+variables <- sort(ab_names[15:49])
+
+
+
+# Plot each variable
+plot_list1 <- lapply(variables, function(var) plot_variable(df_combined_clin_OPC_sero, "stage_t_ajcc8",var))
+plot_list2 <- lapply(variables, function(var) plot_variable(df_combined_clin_OPC_sero, "stage_n_ajcc8",var))
+plot_list3 <- lapply(variables, function(var) plot_variable(df_combined_clin_OPC_sero, "stage_ajcc8",var))
+plot_list1
+#incorrect, these would need to be linear regression
+# plot_list4 <- lapply(variables, function(var) plot_variable(df_combined_clin_OPC_sero, "gtv_primary",var))
+# plot_list5 <- lapply(variables, function(var) plot_variable(df_combined_clin_OPC_sero, "sum_gtv_nodes",var))
+
+
+# 
+# plot_list1
+pdf("~/Documents/1 Bratman/head_neck_analysis_lucas/results/tStage_serology_anova.pdf", width = 10, height = 20) 
+grid.arrange(grobs = plot_list1, ncol = 4, nrow = 9)
+
+
+# plot_list2
+pdf("~/Documents/1 Bratman/head_neck_analysis_lucas/results/nStage_serology_anova.pdf", width = 10, height = 20) 
+grid.arrange(grobs = plot_list2, ncol = 4, nrow = 9)
+
+# plot_list3
+pdf("~/Documents/1 Bratman/head_neck_analysis_lucas/results/Stage_serology_anova.pdf", width = 10, height = 20)
+grid.arrange(grobs = plot_list3, ncol = 4, nrow = 9)
+
+
+##############
+# HPVseq
+##############
+
+
+variables <- "seq_copies_mL_corrected1.67"
+
+# Plot each variable
+plot_list4 <- lapply(variables, function(var) plot_variable(df_combined_clin_OPC_sero, "stage_t_ajcc8",var))
+plot_list5 <- lapply(variables, function(var) plot_variable(df_combined_clin_OPC_sero, "stage_n_ajcc8",var))
+plot_list6 <- lapply(variables, function(var) plot_variable(df_combined_clin_OPC_sero, "stage_ajcc8",var))
+
+plot_list4
+plot_list5
+plot_list6
+
+# plot_list4
+pdf("~/Documents/1 Bratman/head_neck_analysis_lucas/results/tStage_HPVseq_anova.pdf", width = 8, height = 4) 
+grid.arrange(grobs = plot_list4, ncol = 1, nrow = 1)
+
+#plot_list5
+pdf("~/Documents/1 Bratman/head_neck_analysis_lucas/results/nStage_HPVseq_anova.pdf", width = 8, height = 4)  
+grid.arrange(grobs = plot_list5, ncol = 1, nrow = 1)
+
+#plot_list6
+pdf("~/Documents/1 Bratman/head_neck_analysis_lucas/results/Stage_HPVseq_anova.pdf", width = 8, height = 4) 
+grid.arrange(grobs = plot_list6, ncol = 1, nrow = 1)
+
+dev.off()
+
+
+
+
+####################
+# Survival by Serology status
+#####################
+
+
+seros = c("serum_HPV_result","HPV16","HPV18","HPV31","HPV33","HPV35","HPV45","HPV52","HPV58")
+          
+
+# colnames(df_sero)
+## Make the survival plots by mutation
+plot_list <- list()
+
+for (sero in seros) {
+  rfsplot <- get_survplot(pd_survival_by_sero,"surv_recurrence",sero,paste0("RFS by positivity in ",sero))
+  pfsplot <- get_survplot(pd_survival_by_sero,"surv_progression",paste0(sero),paste0("PFS by positivity in ",sero))
+  osplot <- get_survplot(pd_survival_by_sero,"surv_overall",paste0(sero),paste0("OS by positivity in ",sero))
+
+  # Store plots in the list
+  plot_list[[paste0(sero, "rfsplot")]] <- rfsplot + theme(legend.position = 'none')
+  plot_list[[paste0(sero, "pfsplot")]] <- pfsplot + theme(legend.position = 'none')
+  plot_list[[paste0(sero, "osplot")]] <- osplot + theme(legend.position = 'none')
+}
+
+# Arrange plots in a 3x14 grid
+final_plot <- do.call(ggarrange, c(plot_list, list(ncol=3, nrow=13, common.legend = TRUE, align = "hv")))
+
+# Save the final plot as PNG
+ggsave(filename = "~/Documents/1 Bratman/head_neck_analysis_lucas/results/survival_sero_plot.png", plot = final_plot, width = 18, height = 40, dpi = 300)
+
+
+###############
+# indiivudal plots
+###############
+#c("serum_HPV_result","HPV16","HPV18","HPV31","HPV33","HPV35","HPV45","HPV52","HPV58")
+data_type = "HPV35"
+rfsplot <- get_survplot_risktable(pd_survival_by_sero,"surv_recurrence",data_type,paste0("RFS by positivity in ",data_type))
+
+
+print(rfsplot)
+dev.copy(png, filename = paste0("~/Documents/1 Bratman/head_neck_analysis_lucas/results/RFS_survival_ser_",data_type,"_plot.png"))
+dev.off()
+
+
+####################
+# Survival by HPV seq copies Ml corrected
+#####################
+
+df_combined_clin_OPC_sero$median_seq_copies <- df_combined_clin_OPC_sero$seq_copies_mL_corrected1.67
+
+
+test= filter(df_combined_clin_OPC_sero, `HPV 16 E6 alone (> 1000 MFI)` == 0)
+```
+
+```{r}
+
+ggplot(df_combined_clin_OPC_sero, aes(x = HPV_type, y = prop_under_150, fill = HPV_type)) + 
+  geom_violin(width = 1.2) + 
+  geom_boxplot(width = 0.2, outlier.shape = 1) +
+  labs(x = "HPV Type", y = "Proportion under 150bp") +
+  theme_minimal() + 
+  theme(legend.position = "none")
+
+
+```
+
+### Sensitivity Analaysis & Confusion matrix
+
+```{r}
+
+ab_names = colnames(df_sero)
+variables_abs <- ab_names[15:50][grepl("16", ab_names[15:50])]
+
+plot_dotplot <- function(data, response_name, var_name){
+  p <- ggplot(data, aes(x = !!sym(response_name), y = !!sym(var_name))) +
+       geom_point()
+  
+  p <- p + labs(x = response_name, y = var_name) +
+    theme(legend.position = "none")
+
+  # Log scale for the x-axis
+  p <- p + scale_x_log10()
+  
+  p <- p + ggtitle(var_name)
+  return(p)
+}
+
+
+
+plot_list_HPVseq <- lapply(variables_abs, function(var) plot_dotplot(df_combined_clin_OPC_sero, "seq_copies_mL_corrected1.67",var))
+
+plot_list_dPCR <- lapply(variables_abs, function(var) plot_dotplot(df_combined_clin_OPC_sero, "dPCR_copies_mL_average",var))
+
+
+sensitivity_absVSseq = lapply(variables_abs, function(var) 1 - mean(df_combined_clin_OPC_sero[[var]] < 1000 & df_combined_clin_OPC_sero[["seq_copies_mL_corrected1.67"]] > 1))
+
+
+
+
+lm_hpvseq_serolofy = lm(log(dPCR_copies_mL_average) ~ scale(`16E2`) , data=df_combined_clin_OPC_sero)
+
+# summary(lm_hpvseq_serolofy)
+# plot(lm_hpvseq_serolofy)
+# seq_copies_mL_corrected1.67   + scale(`16E2`) +scale(`16E1 fl`) + scale(`16E7`) + scale(`16L1`) + scale(`16E6`)
+  
+
+
+################
+# HPV seq confusion matrix 2x2 
+###############
+
+# Convert HPV16 the columns to factors
+df_combined_clin_OPC_sero$HPVseq_type16 <- ifelse(df_combined_clin_OPC_sero$HPV_type == "HPV-16", 1, 0)
+df_combined_clin_OPC_sero$HPVseq_type16 <- as.factor(df_combined_clin_OPC_sero$HPVseq_type16)
+df_combined_clin_OPC_sero$`HPV 16 E6 alone (> 1000 MFI)` <- as.factor(df_combined_clin_OPC_sero$`HPV 16 E6 alone (> 1000 MFI)`)
+
+# Convert HPV18 the columns to factors
+# df_combined_clin_OPC_sero$HPVseq_type18 <- ifelse(!is.na(df_combined_clin_OPC_sero$`HPV-18` ) , 1, 0)
+df_combined_clin_OPC_sero$HPVseq_type18 <- ifelse(df_combined_clin_OPC_sero$HPV_type == "HPV-18", 1, 0)
+df_combined_clin_OPC_sero$HPVseq_type18 <- as.factor(df_combined_clin_OPC_sero$HPVseq_type18)
+df_combined_clin_OPC_sero$`18 E6 and 18 E7` <- as.factor(df_combined_clin_OPC_sero$`3 pos out of 4  (E1, E2, E6, E7) for HPV18`)
+
+# df_combined_clin_OPC_sero$HPVseq_type33 <- ifelse(!is.na(df_combined_clin_OPC_sero$`HPV-33` ) , 1, 0)
+df_combined_clin_OPC_sero$HPVseq_type33 <- ifelse(df_combined_clin_OPC_sero$HPV_type == "HPV-33", 1, 0)
+df_combined_clin_OPC_sero$HPVseq_type33 <- as.factor(df_combined_clin_OPC_sero$HPVseq_type33)
+df_combined_clin_OPC_sero$`33 E6 and 33 E7` <- as.factor(df_combined_clin_OPC_sero$`33 E6 and 33 E7`)
+
+
+
+# Now compute the confusion matrix
+confusionmatrix_HPV16 <- confusionMatrix(reference=df_combined_clin_OPC_sero$HPVseq_type16, data = df_combined_clin_OPC_sero$`HPV 16 E6 alone (> 1000 MFI)`)
+confusionmatrix_HPV16
+
+confusionmatrix_HPV18 <- confusionMatrix(reference=df_combined_clin_OPC_sero$HPVseq_type18, data = df_combined_clin_OPC_sero$`18 E6 and 18 E7`)
+confusionmatrix_HPV18
+
+confusionmatrix_HPV33 <- confusionMatrix(reference=df_combined_clin_OPC_sero$HPVseq_type33, data = df_combined_clin_OPC_sero$`33 E6 and 33 E7`)
+confusionmatrix_HPV33
+
+
+
+
+############################
+# HPV seq confusion matrix 3x3
+############################
+
+#first generate a dataframe that has all the ones and zeros accordingly. 
+
+
+df_multi_conf = data.frame(patient = df_combined_clin_OPC_sero$patient,
+                          seroHPV16 = df_combined_clin_OPC_sero$`HPV 16 E6 alone (> 1000 MFI)`,
+                          seroHPV18 = df_combined_clin_OPC_sero$`18 E6 and 18 E7`,
+                          seroHPV31 = df_combined_clin_OPC_sero$`31 E6  and 31 E7`,
+                          seroHPV33 = df_combined_clin_OPC_sero$`33 E6 and 33 E7`,
+                          seroHPV35 = df_combined_clin_OPC_sero$`35 E6 and 35 E7`,
+                          seroHPV45 = df_combined_clin_OPC_sero$`45 E6 and 45 E7`,
+                          seroHPV52 = df_combined_clin_OPC_sero$`52 E6 and 52 E7`,
+                          seroHPV58 = df_combined_clin_OPC_sero$`58 E6 and HPV 58 E7`,
+                          seqHPV16 = ifelse(!is.na(df_combined_clin_OPC_sero$`HPV-16` ) , 1, 0),
+                          seqHPV18 = ifelse(!is.na(df_combined_clin_OPC_sero$`HPV-18` ) , 1, 0),
+                          seqHPV31 = ifelse(!is.na(df_combined_clin_OPC_sero$`HPV-31` ) , 1, 0),
+                          seqHPV33 = ifelse(!is.na(df_combined_clin_OPC_sero$`HPV-33` ) , 1, 0),
+                          seqHPV35 = ifelse(!is.na(df_combined_clin_OPC_sero$`HPV-35` ) , 1, 0), 
+                          seqHPV45 = ifelse(!is.na(df_combined_clin_OPC_sero$`HPV-45` ) , 1, 0),
+                          seqHPV52 = ifelse(!is.na(df_combined_clin_OPC_sero$`HPV-52` ) , 1, 0),
+                          seqHPV58 = ifelse(!is.na(df_combined_clin_OPC_sero$`HPV-58` ) , 1, 0))
+
+# # Convert columns 2 to 17 to factor
+df_multi_conf[, 2:17] <- lapply(df_multi_conf[, 2:17], function(x) as.numeric(as.character(x)))
+
+df_multi_conf$sero_sum <- rowSums(df_multi_conf[, 2:9], na.rm = TRUE)
+df_multi_conf$seq_sum = rowSums(df_multi_conf[, 10:17], na.rm = TRUE)
+# Create a new column in your dataframe to store these names
+
+df_multi_conf[, 2:17] <- lapply(df_multi_conf[, 2:17], as.factor)
+
+
+
+
+colnames(df_multi_conf)
+confusionMatrix(data=df_multi_conf$seroHPV16, reference = df_multi_conf$seqHPV16)
+confusionMatrix(data=df_multi_conf$seroHPV18, reference = df_multi_conf$seqHPV18)
+confusionMatrix(data=df_multi_conf$seroHPV31, reference = df_multi_conf$seqHPV31)
+confusionMatrix(data=df_multi_conf$seroHPV33, reference = df_multi_conf$seqHPV33)
+confusionMatrix(data=df_multi_conf$seroHPV35, reference = df_multi_conf$seqHPV35)
+levels(df_multi_conf$seqHPV45) = c("0","1")
+confusionMatrix(data=df_multi_conf$seroHPV45, reference = df_multi_conf$seqHPV45)
+levels(df_multi_conf$seqHPV52) = c("0","1")
+confusionMatrix(data=df_multi_conf$seroHPV52, reference = df_multi_conf$seqHPV52)
+confusionMatrix(data=df_multi_conf$seroHPV58, reference = df_multi_conf$seqHPV58)
+
+df_multi_conf <- df_multi_conf %>%
+  mutate(sero_combined = ifelse(sero_sum > 0,
+                      apply(df_multi_conf[, 2:9], 1, function(row) {
+                        paste(names(row[row == 1]), collapse = ",")
+                      }),
+                      ""))
+df_multi_conf$sero_combined <- gsub("sero", "", df_multi_conf$sero_combined)
+
+df_multi_conf <- df_multi_conf %>%
+  mutate(seq_combined = ifelse(seq_sum > 0,
+                      apply(df_multi_conf[, 10:17], 1, function(row) {
+                        paste(names(row[row == 1]), collapse = ",")
+                      }),
+                      ""))
+df_multi_conf$seq_combined <- gsub("seq", "", df_multi_conf$seq_combined)
+
+df_multi_conf$matched = if_else(df_multi_conf$seq_combined !="" & df_multi_conf$seq_combined == df_multi_conf$sero_combined, TRUE, FALSE)
+
+t(t(table(df_multi_conf$max_col_name)))
+
+
+
+################
+# survival multiple HPV subtypes
+###############
+
+df_combined_clin_OPC_sero <- right_join(df_combined_clin_OPC_sero,df_multi_conf[,c(1,20,21)],by="patient")
+
+df_combined_clin_OPC_sero$multi_sero = ifelse(grepl(",", df_combined_clin_OPC_sero$sero_combined), '1', '0')
+
+df_combined_clin_OPC_sero$multi_seq = ifelse(grepl(",", df_combined_clin_OPC_sero$seq_combined), '1', '0')
+
+pd_survival_by_sero = right_join(pd_survival_by_sero,df_combined_clin_OPC_sero[,c(1,812,813)],by="patient")
+
+
+sero = c("multi_seq")#,"multi_sero")
+plot_list <- list()
+for (sero in multis) {
+  rfsplot <- get_survplot(pd_survival_by_sero,"surv_recurrence",sero,paste0("RFS ",sero))
+  pfsplot <- get_survplot(pd_survival_by_sero,"surv_progression",paste0(sero),paste0("PFS ",sero))
+  osplot <- get_survplot(pd_survival_by_sero,"surv_overall",paste0(sero),paste0("OS ",sero))
+
+  # Store plots in the list
+  plot_list[[paste0(sero, "rfsplot")]] <- rfsplot + theme(legend.position = 'none')
+  plot_list[[paste0(sero, "pfsplot")]] <- pfsplot + theme(legend.position = 'none')
+  plot_list[[paste0(sero, "osplot")]] <- osplot + theme(legend.position = 'none')
+}
+
+# Arrange plots in a 3x14 grid
+final_plot <- do.call(ggarrange, c(plot_list, list(ncol=3, nrow=2, common.legend = TRUE, align = "hv")))
+final_plot
+# Save the final plot as PNG
+ggsave(filename = "~/Documents/1 Bratman/head_neck_analysis_lucas/results/survival_mutli_SeroSeq_plot.png", plot = final_plot, width = 2, height = 2, dpi = 300)
+
+
+
+
+
+
+
+
+```
+
+### Linear Regression for GTV and #Nodes
+
+```{r}
+
+################
+# comparison to HPVseq
+################
+
+# gtv_primary 
+lm_seq_gtvprimary = lm(log(seq_copies_mL_corrected1.67) ~ log(gtv_primary+1), data=df_combined_clin_OPC_sero)
+
+summary(lm_seq_gtvprimary)
+
+# sum_gtv_nodes 
+lm_seq_sum_gtv_nodes = lm(log(seq_copies_mL_corrected1.67) ~ sum_gtv_nodes, data=df_combined_clin_OPC_sero)
+
+summary(lm_seq_sum_gtv_nodes)
+
+# standardized_n_nodes 
+lm_seq_sum_n_nodes = lm(log(seq_copies_mL_corrected1.67) ~ standardized_n_nodes, data=df_combined_clin_OPC_sero)
+
+summary(lm_seq_sum_gtv_nodes)
+
+
+################
+# comparison to Serology
+################
+
+variables_abs <- sort(ab_names[15:50])
+# variables_abs <- "log(seq_copies_mL_corrected1.67)"
+preds = c("sum_gtv_nodes","gtv_primary","n_nodes")
+pred = preds[1]
+
+results_df <- data.frame(variable = character(),
+                         p_value = numeric(),
+                         rsquared = numeric(),
+                         stringsAsFactors = FALSE)
+
+for(item in variables_abs) {
+    # formula_string <- paste0("log(`", item, "`) ~ ", pred)
+    formula_string <- paste0("`", item, "` ~ ", pred)
+    # formula_string <- paste0(item,"~ ", pred)
+    lm_ser_test <- lm(as.formula(formula_string), data=df_combined_clin_OPC_sero)
+    lm_summary <- summary(lm_ser_test)
+    
+    # Extract the p-value for the gtv_primary coefficient
+    # Note: This assumes a two-term model. If your model structure changes, you might need to adjust the index.
+    p_val <- lm_summary$coefficients[2,4]
+    r_sq <- lm_summary$r.squared
+    
+    # Store the result in the dataframe
+    results_df <- rbind(results_df, data.frame(variable = item, p_value = p_val,rsquared=r_sq))
+}
+
+# gtv_primary 
+lm_ser_gtvprimary = lm(log(variables[i]) ~ log(gtv_primary+1), data=df_combined_clin_OPC_sero)
+
+summary(lm_ser_gtvprimary)
+
+# sum_gtv_nodes 
+lm_ser_sum_gtv_nodes = lm(log(variables[i]) ~ sum_gtv_nodes, data=df_combined_clin_OPC_sero)
+
+summary(lm_ser_sum_gtv_nodes)
+
+# standardized_n_nodes 
+lm_ser_sum_n_nodes = lm(log(variables[i]) ~ standardized_n_nodes, data=df_combined_clin_OPC_sero)
+
+summary(lm_ser_sum_n_nodes)
+
+
+#################
+#
+#################
+
+lm_abs_GTV_seq = lm(sum_gtv_nodes ~ log(seq_copies_mL_corrected1.67), data=df_combined_clin_OPC_sero)
+
+summary(lm_abs_GTV_seq)
+
+lm_abs_GTV_sero = lm(sum_gtv_nodes ~ `16E6`, data=df_combined_clin_OPC_sero)
+
+summary(lm_abs_GTV_sero)
+
+##########
+# Plot data
+###########
+
+p <- ggplot(df_combined_clin_OPC_sero, aes(x = gtv_primary, y = seq_copies_mL_corrected1.67)) +
+  geom_point() +
+  scale_x_log10() +   # Log10 scale for x-axis
+  scale_y_log10() +
+  stat_smooth(method = "lm") +
+  labs(
+    x = "gtv_primary",
+    y = "seq_copies_mL_corrected1.67"
+  )
+
+p
+
+p <- ggplot(df_combined_clin_OPC_sero, aes(x = n_nodes, y = seq_copies_mL_corrected1.67)) +
+  geom_point() +
+  scale_x_log10() +   # Log10 scale for x-axis
+  scale_y_log10() +
+  stat_smooth(method = "lm") +
+  labs(
+    x = "n_nodes",
+    y = "seq_copies_mL_corrected1.67"
+  )
+
+p
+
+
+p <- ggplot(df_combined_clin_OPC_sero, aes(x = sum_gtv_nodes, y = seq_copies_mL_corrected1.67)) +
+  geom_point() +
+  scale_x_log10() +   # Log10 scale for x-axis
+  scale_y_log10() +
+  stat_smooth(method = "lm") +
+  labs(
+    x = "sum_gtv_nodes",
+    y = "seq_copies_mL_corrected1.67"
+  )
+
+p
+
+p <- ggplot(df_combined_clin_OPC_sero, aes(x = log(gtv_primary), y = log(`18E6`))) +
+  geom_point() +
+  scale_x_log10() +   # Log10 scale for x-axis
+  scale_y_log10() +
+  stat_smooth(method = "lm") +
+  labs(
+    x = "log(gtv_primary)",
+    y = "18E6"
+  )
+
+p
+
+
+p <- ggplot(df_combined_clin_OPC_sero, aes(x = sum_gtv_nodes, y = log(`16E1 fl`))) +
+  geom_point() +
+  scale_x_log10() +   # Log10 scale for x-axis
+  scale_y_log10() +
+  stat_smooth(method = "lm") +
+  labs(
+    x = "sum_gtv_nodes",
+    y = "16E1"
+  )
+
+p
+
+```
+
+### Linear Regression of Stage
+
+```{r}
+
+
+################
+# comparison to HPVseq
+################
+
+# gtv_primary 
+lm_seq_tstage = lm(log(seq_copies_mL_corrected1.67) ~ stage_t_ajcc8, data=df_combined_clin_OPC_sero)
+
+summary(lm_seq_tstage)
+
+# sum_gtv_nodes 
+lm_seq_stage = lm(log(seq_copies_mL_corrected1.67) ~ stage_n_ajcc8, data=df_combined_clin_OPC_sero)
+
+summary(lm_seq_stage)
+
+# standardized_n_nodes 
+lm_seq_nstage = lm(log(seq_copies_mL_corrected1.67) ~ stage_ajcc8, data=df_combined_clin_OPC_sero)
+
+summary(lm_seq_nstage)
+
+cor.test(log(df_combined_clin_OPC_sero$gtv_primary+1), df_combined_clin_OPC_sero$seq_copies_mL_corrected1.67, method="pearson")
+
+cor.test(df_combined_clin_OPC_sero$sum_gtv_nodes, df_combined_clin_OPC_sero$seq_copies_mL_corrected1.67, method="pearson")
+
+cor.test(df_combined_clin_OPC_sero$sum_gtv_nodes+1, df_combined_clin_OPC_sero$`16E6`, method="pearson")
+
+
+p <- ggally_autopoint(df_combined_clin_OPC_sero, mapping = aes(x = sum_gtv_nodes, y = seq_copies_mL_corrected1.67))
+p + geom_smooth(method = "lm") + scale_y_log10()+ scale_x_log10()
+
+p <- ggally_autopoint(df_combined_clin_OPC_sero, mapping = aes(x = sum_gtv_nodes, y = `16E6`))
+p + geom_smooth(method = "lm") + scale_y_log10()+ scale_x_log10()
+
+
+
+
+
+summary(lm(log(`16E6`) ~ stage_ajcc8, data=df_combined_clin_OPC_sero))
+summary(lm(log(`16E6`) ~ stage_n_ajcc8, data=df_combined_clin_OPC_sero))
+summary(lm(log(`16E6`) ~ stage_t_ajcc8, data=df_combined_clin_OPC_sero),correlation = T)
+
+```
+
+## October 12th Eric Notes
+
+```{r, fig.width=8, fig.height=5}
+
+survfit(
+  Surv(time_to_recurrence, recurrence) ~ hpvseq_group,
+  data = df_combined_clin_OPC_sero %>%
+    filter(Timepoint == 'Baseline') %>%
+    mutate(hpvseq_group = if_else(seq_copies_mL_corrected1.67 > quantile(seq_copies_mL_corrected1.67, na.rm = T,probs = 0.5), 'Above median', 'Below median')) %>%
+    left_join(df_OPC)
+) %>%
+ggsurvplot(pval = T)
+
+survfit(
+  Surv(time_to_progression, progression) ~ stage_ajcc8,
+  data = df_combined_clin_OPC_sero ) %>%
+ggsurvplot(pval = T)
+
+
+
+
+coxph(
+  Surv(time_to_recurrence, recurrence) ~ `log HPV-seq` + `T category` + `N category`,
+  data = df_combined_clin_OPC_sero %>%
+    # left_join(df_clinical_ctdna) %>%
+    filter(Timepoint == 'Baseline') %>%
+    mutate(
+      `log HPV-seq` = log10(as.integer(seq_copies_mL_corrected1.67)+1),
+      `T category` = as.integer(gsub("T", "", stage_t_ajcc8)),
+      `N category` = as.integer(gsub("N", "", stage_n_ajcc8))
+    )
+) %>%
+forestmodel::forest_model()
+
+#############
+# plot_variable function
+#############
+
+plot_variable <- function(data, response_name, var_name) {
+  # Determine unique values of var_name
+  unique_values <- unique(data[[response_name]])
+  # Create pairwise combinations of those unique values
+  comparisons_list <- combn(unique_values, 2, simplify = FALSE)
+   
+  p <- ggplot(data, aes(x = !!sym(response_name), y = !!sym(var_name))) +
+       geom_boxplot(aes(fill = !!sym(var_name)))
+  
+  p <- p + labs(x = response_name, y = var_name) +
+    theme(legend.position = "none")
+
+  # Log scale for the y-axis
+  p <- p + scale_y_log10()
+
+  # Add pairwise comparisons to the plot, choose anova because these are normally distributed data
+  # p <- p + stat_compare_means(comparisons = comparisons_list) + stat_compare_means(label.y = 5)
+  p <- p + stat_compare_means(method = "kruskal.test") +
+    stat_compare_means(label = "p.signif", method = "t.test", ref.group = ".all.")
+  
+  return(p)
+}
+
+# df_combined_clin_OPC_sero
+# seq_copies_mL_corrected1.67
+# stage_n_ajcc8
+
+
+
+df_combined_clin_OPC_sero <- df_combined_clin_OPC_sero %>%
+  mutate(
+    grouped_stage_t_ajcc8 = case_when(
+      stage_t_ajcc8 %in% c("T1", "T2") ~ "T1T2",
+      stage_t_ajcc8 %in% c("T3", "T4") ~ "T3T4",
+      TRUE ~ as.character(stage_t_ajcc8)  # for other unexpected values if they exist
+    ),
+    grouped_stage_n_ajcc8 = case_when(
+      stage_n_ajcc8 %in% c("N0", "N1") ~ "N0N1",
+      stage_n_ajcc8 %in% c("N2", "N3") ~ "N2N3",
+      TRUE ~ as.character(stage_n_ajcc8)  # for other unexpected values if they exist
+    )
+  )
+
+
+
+# Plot each variable
+plot_list1 <- lapply(variables_abs, function(var) plot_variable(df_combined_clin_OPC_sero, "stage_t_ajcc8",var))
+plot_list2 <- lapply(variables_abs, function(var) plot_variable(df_combined_clin_OPC_sero, "stage_n_ajcc8",var))
+plot_list3 <- lapply(variables_abs, function(var) plot_variable(df_combined_clin_OPC_sero, "stage_ajcc8",var))
+
+#incorrect, these would need to be linear regression
+# plot_list4 <- lapply(variables, function(var) plot_variable(df_combined_clin_OPC_sero, "gtv_primary",var))
+# plot_list5 <- lapply(variables, function(var) plot_variable(df_combined_clin_OPC_sero, "sum_gtv_nodes",var))
+# plot_list1
+# plot_list2
+# plot_list3
+
+df_combined_clin_OPC_sero %>%
+  group_by(stage_n_ajcc8) %>%
+  summarize(
+    count_patients = n(),
+    mean_sero_copies = mean(`16E6`, na.rm = TRUE)
+  )
+
+df_combined_clin_OPC_sero %>%
+  group_by(stage_n_ajcc8) %>%
+  summarize(count_patients = n(),
+            mean_seq_copies = mean(seq_copies_mL_corrected1.67, na.rm = TRUE))
+
+df_combined_clin_OPC_sero %>%
+  group_by(stage_t_ajcc8) %>%
+  summarize(count_patients = n(),
+            mean_sero = mean(`16E6`, na.rm = TRUE))
+
+
+
+df_combined_clin_OPC_sero %>%
+  group_by(count_patients = n(),stage_t_ajcc8) %>%
+  summarize(count_patients = n(),
+            mean_seq = mean(seq_copies_mL_corrected1.67, na.rm = TRUE))
+
+
+
+
+df_combined_clin_OPC_Frag %>%
+    filter(Timepoint == 'Baseline') %>%
+    group_by(count_patients = n(),stage_t_ajcc8) %>%
+    summarize(count_patients = n())
+
+
+survfit(
+  Surv(time_to_recurrence, recurrence) ~ grouped_stage_t_ajcc8,
+  data = df_combined_clin_OPC_Frag %>%
+    filter(Timepoint == 'Baseline') %>%
+    mutate(
+    grouped_stage_t_ajcc8 = case_when(
+      stage_t_ajcc8 %in% c("T1", "T2") ~ "T1T2",
+      stage_t_ajcc8 %in% c("T3", "T4") ~ "T3T4",
+      TRUE ~ as.character(stage_t_ajcc8)  # for other unexpected values if they exist
+    ))
+) %>%
+ggsurvplot(pval = T)
+
+
+survfit(
+  Surv(time_to_recurrence, recurrence) ~ prop_under_150_group,
+  data = df_combined_clin_OPC_Frag %>%
+    filter(Timepoint == 'Baseline') %>%
+    mutate(prop_under_150_group = if_else(prop_under_150 > quantile(prop_under_150, na.rm = T,probs = 0.90), 'Above median', 'Below median'))) %>%
+ggsurvplot(pval = T)
+
+##############
+# only sign at 90, not at median
+##############
+survfit(
+  Surv(time_to_recurrence, recurrence) ~ prop_bt_200_300_group,
+  data = df_combined_clin_OPC_Frag %>%
+    filter(Timepoint == 'Baseline') %>%
+    mutate(prop_bt_200_300_group = if_else(prop_bt_200_300 > quantile(prop_bt_200_300, na.rm = T,probs = 0.9), 'Above 90th percentile', 
+                                        'Below 90th percentile'))) %>%
+ggsurvplot(pval = T)
+  
+df_combined_clin_OPC_Frag %>%
+  filter(Timepoint == 'Baseline') %>%
+  mutate(prop_under_150_group = if_else(prop_bt_200_300 > quantile(prop_bt_200_300, na.rm = TRUE, probs = 0.9), 
+                                        'Above 90th percentile', 
+                                        'Below 90th percentile')) %>%
+  group_by(prop_under_150_group) %>%
+  summarize(
+    count_patients = n()
+  )
+
+
+
+
+
+
+```

@@ -1,0 +1,631 @@
+---
+title: "CBCT-FATE Production Testing"
+author: "Eric Zhao"
+date: "2023-05-10"
+output:
+  rmdformats::readthedown:
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: false
+    highlight: tango
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  results = FALSE,
+  dev=c('png', 'pdf', 'svg'),
+  fig.path='figures/cbct/'
+)
+
+library(viridis)
+library(umap)
+library(zoo)
+library(survival)
+library(survminer)
+library(lubridate)
+library(gtsummary)
+library(GGally)
+library(ggdendro)
+library(cowplot)
+library(ggthemr)
+library(ggbeeswarm)
+library(ggsignif)
+library(tidyverse)
+library(forestmodel)
+library(RColorBrewer)
+library(pander)
+library(numDeriv)
+library(yaml)
+library(dbscan)
+library(scales)
+library(ggrepel)
+library(patchwork)
+
+
+panderOptions('round', 3)
+panderOptions('table.style', 'rmarkdown')
+
+ggthemr(
+  palette = 'pale',
+  layout = 'minimal',
+)
+
+load('data/results/data_cbct_fate_paper.Rdata')
+
+shared_theme <- theme(
+  axis.text.x = element_text(angle = 45, hjust = 1)
+)
+
+source('src/summary_functions.R')
+```
+
+# FATE-CBCT Analysis
+
+```{r old_fate_processed}
+df_airvolume_processed <- df_airvolume %>%
+  left_join(df_clinical) %>%
+  group_by(patient) %>%
+  arrange(patient, fraction) %>%
+  mutate(
+    air_volume_proportion = air_volume / gtv_primary,
+    smoothed = smooth.spline(x = fraction, y = air_volume, df=5) %>% predict(fraction) %>% .$y,
+    smoothed_normalized = (smoothed - smoothed[fraction == 0]) / (gtv_primary),
+    normalized = (air_volume - smoothed[fraction == 0]) / (gtv_primary),
+    normalized_percent = normalized * 100,
+    percent_vol = smoothed_normalized * 100,
+    fraction_standardized = fraction * 35 / max(fraction)
+  ) %>%
+  ungroup()
+
+
+df_airvolume_smooth <- df_airvolume %>%
+  left_join(df_clinical) %>%
+  group_by(patient, gtv_primary) %>%
+  arrange(patient, fraction) %>%
+  mutate(
+    fraction_standardized = fraction * 35 / max(fraction),
+    air_volume_proportion = air_volume / gtv_primary
+  ) %>%
+  summarise(
+    fraction = 0:35,
+    smoothed = smooth.spline(x = fraction_standardized, y = air_volume, df=5) %>% predict(fraction) %>% .$y,
+    slope_prenorm = grad(
+      function(x) {
+        return(smooth.spline(x = fraction_standardized, y = air_volume, df=5) %>% predict(x) %>% .$y)
+      },
+      x = 0:35
+    )
+  ) %>%
+  mutate(
+    smoothed_normalized = (smoothed - smoothed[fraction == 0]) / (gtv_primary),
+    percent_vol = smoothed_normalized * 100,
+    slope = slope_prenorm / gtv_primary * 100
+  ) %>%
+  ungroup()
+
+df_airvolume_auc <- df_airvolume_processed %>%
+  group_by(mrn, patient) %>%
+  arrange(mrn, patient, fraction) %>%
+  mutate(percent_vol = if_else(percent_vol < 0, 0, percent_vol)) %>%
+  mutate(
+    previous_fraction = c(fraction[1], fraction[1:(n()-1)]),
+    width = fraction - previous_fraction,
+    previous_volume = c(percent_vol[1], percent_vol[1:(n()-1)]) / 100,
+    area = (percent_vol/100 + previous_volume)/2 * width
+  ) %>%
+  summarise(
+    auc = sum(area)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    auc_group = if_else(auc > median(auc), 'Above median', 'Below median')
+  )
+```
+
+# Re-analysis of the NPC CBCT FATE cohort
+
+In this document, we perform statistical analysis on results generated from MIRA pipeline on CBCT data.
+
+![](/Users/ezhao/Documents/Obsidian/Work and Life/Daily Notes/Overview of CBCT-FATE Processing.svg)
+
+```{r, fig.width = 10, fig.height = 10}
+df_cbctfate_npc_raw <- read_csv('data/cbctfate/2023 Apr 26 - HN NPC FATE Validation-geometries.csv') %>%
+  mutate(Mrn = as.double(Mrn)) %>%
+  group_by(Mrn, Roi) %>%
+  filter(n() >= 10) %>%
+  filter(!is.na(Volume)) %>%
+  mutate(
+    outlier = abs((Volume - mean(Volume)) / sd(Volume)) > 2
+  ) %>%
+  ungroup() %>%
+  group_by(Mrn, Roi) %>%
+  mutate(
+    cluster = cbind(ExamFraction, Volume) %>%
+      dbscan(minPts = 10, eps = 15) %>%
+      .$cluster %>% as.factor,
+    outlier = cluster == 0,
+    smooth_spline = lowess(ExamFraction, Volume)$y,
+    residual = Volume - smooth_spline,
+    sd_band = 2 * sd(residual),
+    outlier = outlier | (abs(residual) > (2 * sd(residual)))
+  ) %>%
+  ungroup()
+```
+
+## Outlier Detection by Smoothing Spline
+
+We fit a smoothing spline with the `lowess` function. We compute the standard deviation of residuals and label as outliers any points falling greater than 2 standard deviations above or below the spline. This is illustrated below.
+
+```{r outlier_detection_smoothing_spline, fig.width = 10, fig.height = 10}
+df_cbctfate_npc_raw %>%
+  plyr::dlply('Roi', function(z) {
+    z %>%
+      ggplot(aes(
+        x = ExamFraction,
+        y = Volume,
+        color = outlier
+      )) +
+      geom_ribbon(aes(
+        y = smooth_spline,
+        ymin = smooth_spline - sd_band,
+        ymax = smooth_spline + sd_band
+      ), fill = 'Grey90', color = NA) +
+      geom_point() +
+      scale_color_brewer(palette = 'Set1') +
+      facet_wrap(~Mrn, scales='free') +
+      ggtitle(z$Roi %>% unique)
+  })
+```
+
+## Outlier Detection by Density Clustering
+
+We then cluster the resulting data using DBSCAN to identify any heterogeneous clusters or noise points that might suggest further outliers.
+
+```{r outlier_detection_density_clustering, fig.width = 10, fig.height = 10}
+df_cbctfate_npc_raw %>%
+  plyr::dlply('Roi', function(z) {
+    z %>%
+      filter(!outlier) %>%
+      ggplot(aes(
+        x = ExamFraction,
+        y = Volume,
+        color = cluster
+      )) +
+      geom_point() +
+      scale_color_brewer(palette = 'Set1') +
+      facet_wrap(~Mrn, scales='free')
+  })
+```
+
+## Fit Smoothing Spline
+
+With outliers removed, we then fit the final smoothing spline that actually represents the FATE-CBCT score.
+
+```{r, fig.width = 10, fig.height = 10}
+df_cbctfate_npc <- df_cbctfate_npc_raw %>%
+  filter(!outlier) %>%
+  left_join(df_clinical %>% select(Mrn=mrn, gtv_primary)) %>%
+  group_by(Mrn, Roi) %>%
+  arrange(Mrn, Roi, ExamFraction) %>%
+  mutate(
+    air_volume_proportion = Volume / gtv_primary,
+    smoothed = lowess(x = ExamFraction, y = Volume, f = 0.5)$y,
+    smoothed_normalized = (smoothed - smoothed[1]) / (gtv_primary),
+    normalized = (Volume - smoothed[1]) / (gtv_primary),
+    normalized_percent = normalized * 100,
+    percent_vol = smoothed_normalized * 100,
+  ) %>%
+  ungroup()
+
+df_cbctfate_npc %>%
+  plyr::dlply('Roi', function(z) {
+    z %>%
+      ggplot(aes(
+        x = ExamFraction,
+        y = Volume
+      )) +
+      geom_point() +
+      scale_color_brewer(palette = 'Set1') +
+      facet_wrap(~Mrn, scales='free') +
+      geom_line(
+        aes(
+          y = smoothed
+        ),
+        color = 'black',
+        size = 2
+      ) +
+      ggtitle(z$Roi %>% unique)
+  })
+  
+```
+
+The values are then scaled to represent a fraction of the initial GTV and translated to start at zero.
+
+```{r, fig.width = 10, fig.height = 10}
+df_cbctfate_npc %>%
+  plyr::dlply('Roi', function(z) {
+    z %>%
+      ggplot(aes(
+        x = ExamFraction,
+        y = normalized_percent
+      )) +
+      geom_point() +
+      scale_color_brewer(palette = 'Set1') +
+      facet_wrap(~Mrn, scales='free') +
+      geom_line(
+        aes(
+          y = percent_vol
+        ),
+        color = 'black',
+        size = 2
+      ) +
+      ggtitle(z$Roi %>% unique)
+  })
+```
+
+Here, we compare results against the previously computed FATE-CBCT trajectories for the NPC pilot cohort specifically.
+
+```{r, fig.width = 10, fig.height = 10}
+df_cbctfate_npc %>%
+  plyr::dlply('Roi', function(z) {
+    z %>%
+      distinct(Mrn, ExamFraction, FATE_new = percent_vol) %>%
+      left_join(df_airvolume_processed %>% distinct(Mrn = mrn, ExamFraction = fraction, FATE_old = percent_vol)) %>%
+      mutate(diff = (FATE_old - FATE_new)^2) %>%
+      gather(attempt, value, FATE_old, FATE_new) %>%
+      mutate(Mrn = fct_reorder(as.character(Mrn), diff, 'sum', na.rm=T, .desc = T)) %>%
+      ggplot(aes(
+        x = ExamFraction,
+        y = value,
+        color = attempt
+      )) +
+      geom_line() +
+      scale_color_brewer(palette = 'Set1') +
+      facet_wrap(~Mrn, scales = 'free') +
+      ggtitle(z$Roi %>% unique)
+  })
+```
+
+And now using correlation scatterplots.
+
+```{r, fig.width = 10, fig.height = 10}
+df_cbctfate_npc %>%
+  plyr::dlply('Roi', function(z) {
+    z %>%
+      distinct(Mrn, ExamFraction, FATE_new = percent_vol) %>%
+      left_join(df_airvolume_processed %>% distinct(Mrn = mrn, ExamFraction = fraction, FATE_old = percent_vol)) %>%
+      mutate(diff = (FATE_old - FATE_new)^2) %>%
+      mutate(Mrn = fct_reorder(as.character(Mrn), diff, 'sum', na.rm=T, .desc = T)) %>%
+      ggplot(aes(
+        x = FATE_old,
+        y = FATE_new
+      )) +
+      geom_point() +
+      facet_wrap(~Mrn, scales = 'free') +
+      geom_abline(intercept = 0, slope = 1, color = 'black')
+  })
+```
+
+It is clear that FATE-CBCT trajectories are generally concordant with previous computations.
+
+## Calculation of AUC
+
+We compute the AUC of each trajectory. They are summarized in histograms below. Note that all X axes here are different, as the various metrics lie on different scales.
+
+```{r}
+df_cbctfate_npc_auc <- df_cbctfate_npc %>%
+  group_by(Mrn, Roi) %>%
+  arrange(Mrn, ExamFraction) %>%
+  mutate(
+    previous_fraction = c(ExamFraction[1], ExamFraction[1:(n()-1)]),
+    width = ExamFraction - previous_fraction,
+    previous_volume = c(percent_vol[1], percent_vol[1:(n()-1)]) / 100,
+    area = (percent_vol/100 + previous_volume)/2 * width
+  ) %>%
+  summarise(auc = sum(area)) %>%
+  ungroup() %>%
+  group_by(Roi) %>%
+  mutate(auc_group = if_else(auc > median(auc), 'Above median', 'Below median')) %>%
+  ungroup()
+
+df_cbctfate_npc_auc %>%
+  ggplot(aes(
+    x = auc
+  )) +
+  geom_histogram() +
+  facet_wrap(~Roi, scales = 'free')
+```
+
+## Cross-correlation of AUC values
+
+Below figure shows pairwise scatter plots between each pair of metrics.
+
+```{r, fig.width = 10, fig.height = 8}
+df_cbctfate_npc_auc %>%
+  select(Mrn, Roi, auc) %>%
+  spread(Roi, auc) %>%
+  ggpairs() +
+  theme_grey()
+```
+
+## Correlation against pilot cohort AUCs
+
+Do AUCs correlate with previously computed AUCs? Yes, they appear to mostly fall along the line of equivalence.
+
+```{r, fig.height = 8, fig.width = 10}
+df_airvolume_auc %>%
+  distinct(Mrn=mrn, patient, old_auc=auc) %>%
+  inner_join(df_cbctfate_npc_auc) %>%
+  ggplot(aes(
+    x = old_auc,
+    y = auc
+  )) +
+  geom_point() +
+  geom_text_repel(aes(label = Mrn), max.overlaps = 3, min.segment.length = 0) +
+  geom_abline(slope = 1, intercept = 0) +
+  facet_wrap(~Roi, scales = 'free')
+```
+
+## Associations with Recurrence-Free Survival (RFS)
+
+FATE-CBCT with adaptive air density threshold.
+
+```{r}
+df_cbctfate_npc_auc %>%
+  left_join(df_clinical, by = c('Mrn' = 'mrn')) %>%
+  filter(Roi == 'x_Air_GTVp_Expanded05') %>%
+  {
+    fit = survfit(Surv(time_to_earliest_failure, failure) ~ auc_group, data = .)
+    ggsurvplot(fit, data = ., pval = T)
+  } +
+  ggtitle('FATE-CBCT (Adaptive threshold) AUC vs. RFS')
+
+df_cbctfate_npc_auc %>%
+  left_join(df_clinical, by = c('Mrn' = 'mrn')) %>%
+  filter(Roi == 'x_Air_GTVp_Expanded05') %>%
+  mutate(stage = as.numeric(stage_ajcc7)) %>%
+  coxph(
+    Surv(time_to_earliest_failure, failure) ~ auc + stage,
+    data = .
+  ) %>%
+  forest_model() +
+  ggtitle('FATE-CBCT (Adaptive threshold) AUC vs. RFS, adjusted for stage')
+```
+
+FATE-CBCT with fixed air density threshold.
+
+```{r}
+df_cbctfate_npc_auc %>%
+  left_join(df_clinical, by = c('Mrn' = 'mrn')) %>%
+  filter(Roi == 'x_Air_GTVp_Expanded05_FixedThresh') %>%
+  {
+    fit = survfit(Surv(time_to_earliest_failure, failure) ~ auc_group, data = .)
+    ggsurvplot(fit, data = ., pval = T)
+  } +
+  ggtitle('FATE-CBCT (Fixed threshold) AUC vs. RFS')
+
+df_cbctfate_npc_auc %>%
+  left_join(df_clinical, by = c('Mrn' = 'mrn')) %>%
+  filter(Roi == 'x_Air_GTVp_Expanded05_FixedThresh') %>%
+  mutate(stage = as.numeric(stage_ajcc7)) %>%
+  coxph(
+    Surv(time_to_earliest_failure, failure) ~ auc + stage,
+    data = .
+  ) %>%
+  forest_model() +
+  ggtitle('FATE-CBCT (Fixed threshold) AUC vs. RFS, adjusted for stage')
+```
+
+GTV Tracking AUC.
+
+```{r}
+df_cbctfate_npc_auc %>%
+  left_join(df_clinical, by = c('Mrn' = 'mrn')) %>%
+  filter(Roi == 'x_GTV_Tracking') %>%
+  {
+    fit = survfit(Surv(time_to_earliest_failure, failure) ~ auc_group, data = .)
+    ggsurvplot(fit, data = ., pval = T)
+  } +
+  ggtitle('GTV Tracking AUC vs. RFS')
+
+df_cbctfate_npc_auc %>%
+  left_join(df_clinical, by = c('Mrn' = 'mrn')) %>%
+  filter(Roi == 'x_GTV_Tracking') %>%
+  mutate(stage = as.numeric(stage_ajcc7)) %>%
+  coxph(
+    Surv(time_to_earliest_failure, failure) ~ auc + stage,
+    data = .
+  ) %>%
+  forest_model() +
+  ggtitle('GTV Tracking AUC vs. RFS, adjusted for stage')
+```
+
+
+# OPC CBCT Kinetics
+
+```{r, fig.height = 10, fig.width = 10}
+df_cbctfate_opc_raw <- read_csv('data/imaging/HN OPC FATE Testing-geometries.csv') %>%
+  group_by(Mrn, Roi) %>%
+  filter(n() >= 10) %>%
+  mutate(
+    outlier = abs((Volume - mean(Volume)) / sd(Volume)) > 2
+  ) %>%
+  ungroup() %>%
+  filter(Roi %in% c('x_GTV_Tracking', 'x_Air_GTVp_Expanded05')) %>%
+  filter(!is.na(Volume)) %>%
+  group_by(Mrn, Roi) %>% 
+  mutate(
+    cluster = cbind(ExamFraction, Volume) %>%
+      dbscan(minPts = 10, eps = 15) %>%
+      .$cluster %>% as.factor,
+    outlier = cluster == 0,
+    smooth_spline = lowess(ExamFraction, Volume)$y,
+    residual = Volume - smooth_spline,
+    outlier = outlier | (abs(residual) > (2 * sd(residual)))
+  ) %>%
+  ungroup()
+
+load('data/results/HPV_analysis_dataframes.Rdata')
+
+df_cbctfate_opc <- df_clinical_ctdna %>%
+  distinct(patient, Mrn=mrn) %>%
+  left_join(df_gtv_primary) %>%
+  left_join(df_cbctfate_opc_raw) %>%
+  filter(!outlier) %>%
+  group_by(Mrn, Roi) %>%
+  filter(length(unique(cluster[cluster != 0])) == 1) %>%
+  ungroup() %>%
+  distinct() %>%
+  group_by(Mrn, Roi) %>%
+  arrange(Mrn, Roi, ExamFraction) %>%
+  mutate(
+    air_volume_proportion = Volume / gtv_primary,
+    smoothed = lowess(x = ExamFraction, y = Volume, f = 0.5)$y,
+    smoothed_normalized = (smoothed - smoothed[1]) / (gtv_primary),
+    normalized = (Volume - smoothed[1]) / (gtv_primary),
+    normalized_percent = normalized * 100,
+    percent_vol = smoothed_normalized * 100,
+  ) %>%
+  ungroup()
+
+df_cbctfate_opc_raw %>%
+  filter(Roi == 'x_Air_GTVp_Expanded05') %>%
+  filter(Mrn %in% unique(Mrn)[1:36]) %>%
+  ggplot(aes(
+    x = ExamFraction,
+    y = Volume,
+    color = outlier
+  )) +
+  geom_point() +
+  scale_color_brewer(palette = 'Set1') +
+  facet_wrap(~Mrn, scales='free')
+
+df_cbctfate_opc_raw %>%
+  filter(Roi == 'x_Air_GTVp_Expanded05') %>%
+  filter(Mrn %in% unique(Mrn)[1:36]) %>%
+  filter(!outlier) %>%
+  ggplot(aes(
+    x = ExamFraction,
+    y = Volume,
+    color = cluster
+  )) +
+  geom_point() +
+  scale_color_brewer(palette = 'Set1') +
+  facet_wrap(~Mrn, scales='free')
+```
+
+```{r, fig.width = 5, fig.height = 5}
+df_cbctfate_opc_raw$Mrn %>% unique %>% length
+df_cbctfate_opc_raw %>%
+  filter(Roi == 'x_Air_GTVp_Expanded05') %>%
+  group_by(Mrn, Roi) %>%
+  filter(length(unique(cluster[cluster != 0])) > 1) %>%
+  ungroup() %>%
+  ggplot(aes(
+    x = ExamFraction,
+    y = Volume,
+    color = cluster
+  )) +
+  geom_point() +
+  scale_color_brewer(palette = 'Set1') +
+  facet_wrap(~Mrn, scales='free')
+```
+
+```{r, fig.width = 15, fig.height = 15}
+df_cbctfate_opc %>%
+  filter(Roi == 'x_Air_GTVp_Expanded05') %>%
+  group_by(Mrn, Roi) %>%
+  filter(length(unique(cluster[cluster != 0])) == 1) %>%
+  ungroup() %>%
+  ggplot(aes(
+    x = ExamFraction,
+    y = normalized_percent
+  )) +
+  geom_point() +
+  scale_color_brewer(palette = 'Set1') +
+  facet_wrap(~Mrn, scales='free') +
+  geom_line(aes(
+    y = percent_vol
+  ), color = 'black', size = 2)
+
+df_cbctfate_opc %>%
+  filter(Roi == 'x_GTV_Tracking') %>%
+  group_by(Mrn, Roi) %>%
+  filter(length(unique(cluster[cluster != 0])) == 1) %>%
+  ungroup() %>%
+  ggplot(aes(
+    x = ExamFraction,
+    y = normalized_percent
+  )) +
+  geom_point() +
+  scale_color_brewer(palette = 'Set1') +
+  facet_wrap(~Mrn, scales='free') +
+  geom_line(aes(
+    y = percent_vol
+  ), color = 'black', size = 2)
+```
+
+```{r, eval=F}
+df_cbctfate_opc_auc <- df_cbctfate_opc %>%
+  filter(Roi == 'x_GTV_Tracking') %>%
+  distinct(Mrn, patient, ExamFraction, percent_vol) %>%
+  group_by(Mrn, patient) %>%
+  arrange(Mrn, patient, ExamFraction) %>%
+  mutate(
+    previous_fraction = c(ExamFraction[1], ExamFraction[1:(n()-1)]),
+    width = ExamFraction - previous_fraction,
+    previous_volume = c(percent_vol[1], percent_vol[1:(n()-1)]) / 100,
+    area = (percent_vol/100 + previous_volume)/2 * width
+  ) %>%
+  summarise(
+    auc = sum(area)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    auc_group = if_else(auc > median(auc), 'Above median', 'Below median')
+  )
+
+df_cbctfate_opc %>%
+  filter(Roi == 'x_GTV_Tracking') %>%
+  distinct(Mrn, patient, ExamFraction, percent_vol) %>%
+  group_by(Mrn) %>%
+  ungroup() %>%
+  left_join(df_cbctfate_opc_auc) %>%
+  ggplot(aes(
+    x = ExamFraction,
+    y = percent_vol,
+    group = patient,
+    color = auc_group
+  )) +
+  geom_line() +
+  scale_color_brewer(palette = 'Set1')
+
+fit <- survfit(
+  Surv(time_to_recurrence, recurrence) ~ auc_group,
+  data = df_airvolume_auc %>%
+    left_join(df_ctdna_clinical) %>%
+    mutate(auc_group = if_else(auc > -1, 'high', 'low'))
+)
+ggsurvplot(fit, pval=T)$plot + scale_color_brewer(palette = 'Set1')
+
+df_airvolume_auc %>%
+  ggplot(aes(
+    x = auc
+  )) +
+  geom_histogram()
+
+df_cbctfate_opc %>%
+  filter(patient == 'HN2753') %>%
+  distinct()
+  filter(Roi == 'x_Air_GTVp_Expanded05') %>%
+  count(patient)
+  
+df_airvolume_auc %>%
+  left_join(df_clinical_ctdna) %>%
+  .$recurrence %>% sum
+```

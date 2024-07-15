@@ -1,0 +1,640 @@
+---
+title: "Human_Fragmentomics"
+output: html_document
+date: "2024-05-13"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load Packages
+
+```{r}
+
+library(data.table)
+library(dplyr)
+library(faraway)
+library(ggExtra)
+library(GGally)
+library(ggsci)
+library(ggplot2)
+library(ggpubr)
+library(ggthemr)
+library(gridExtra)
+library(gt)
+library(gtsummary)
+library(rlang)
+library(scales)
+library(survival)
+library(survminer)
+library(readxl)
+library(reshape2)
+library(tidyverse)
+
+ggthemr("fresh")
+
+
+load("/Users/graceliu/bratman/data_frames_compressed.RData")
+```
+
+# Data processing
+
+```{r eval=FALSE,include=FALSE,echo=FALSE}
+
+df_OPC <- read_excel("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/summary/Quantification/summ_OPC.v7.1.xlsx")
+colnames(df_OPC)[2] = c("patient")
+
+df_clinical = fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/clincalData/clinical_data.tsv")
+
+df_gtv_nodes = fread("~/Documents/1 Bratman/head_neck_analysis_lucas/clincalData/df_gtv_nodes.tsv")
+
+df_gtv_primary = fread("~/Documents/1 Bratman/head_neck_analysis_lucas/clincalData/df_gtv_primary.tsv")
+
+df_OPC = df_OPC %>% 
+  left_join(df_clinical,by=("patient")) %>% 
+  left_join(select(df_gtv_nodes,patient,sum_gtv_nodes), by = "patient") %>% 
+  left_join(select(df_gtv_primary,patient,gtv_primary), by = "patient")
+
+df_OPC$Sample <- gsub("_L0\\d+.*", "", df_OPC$Sample)
+
+df_hg_healthy_frag = fread("~/Documents/1 Bratman/head_neck_analysis_lucas/HPV-seq/data/hg/fragmentLength/20240130_HUCON_fragmenthLength.csv") 
+df_hg_healthy_frag$Sample <- gsub("_insert_size_metrics.txt", "", 
+                                  df_hg_healthy_frag$filename) 
+df_hg_healthy_frag = df_hg_healthy_frag[1:20,]
+
+df_jinfeng_fraglength = fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/HPV-seq/data/hg/fragmentLength/20240513_jinfeng_hg_fraglength.csv")
+df_jinfeng_fraglength$Sample <- gsub("_L0\\d+.*", "", df_jinfeng_fraglength$filename)
+
+df_prop_jinfeng <- df_jinfeng_fraglength %>%
+  # Calculate the sum of columns 3 through 603
+  mutate(total_sum = rowSums(.[, 53:253])) %>%
+  dplyr::select(Sample, everything()) %>%
+  mutate(across(53:253, ~ . / total_sum)) %>% 
+  dplyr::select(Sample,53:253)  
+  # filter(Sample == "OPC_Pool-5_62_S62") %>% 
+  # pivot_longer(cols = 2:202, names_to = "Variable", values_to = "Value")
+
+# fwrite(df_prop_jinfeng,"~/Desktop/human_fragmentlength_proportions.txt",quote=F,row.names = F,sep="\t",col.names = T)
+
+
+# df_hg_frag = fread("~/Documents/1 Bratman/head_neck_analysis_lucas/HPV-seq/data/hg/fragmentLength/20240513_lucas_hg_fragment_length_summary.csv")
+# colnames(df_hg_frag)[2] = c("Sample")
+
+# df_prop_lucas <- df_hg_frag %>%
+#   # Calculate the sum of columns 3 through 603
+#   mutate(total_sum = rowSums(.[, 53:253])) %>%
+#   dplyr::select(Sample, everything()) %>%
+#   mutate(across(53:253, ~ . / total_sum)) %>% 
+#   dplyr::select(Sample,53:253) 
+# 
+df_prop_healthy <- df_hg_healthy_frag %>%
+  # Calculate the sum of columns 3 through 603
+  mutate(total_sum = rowSums(.[, 53:253])) %>%
+  dplyr::select(Sample, everything()) %>%
+  mutate(across(53:253, ~ . / total_sum)) %>%
+  dplyr::select(Sample,53:253)
+
+
+
+save(df_clinical, df_gtv_nodes, df_gtv_primary, df_hg_healthy_frag, df_jinfeng_fraglength, df_OPC, df_prop_healthy, df_prop_jinfeng, file = "/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/HPV-seq/data/20240624_NatMed_dfs/data_frames_compressed.RData", compress = TRUE)
+
+# attach('/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/HPV-seq/data/HPV_analysis_dataframes.Rdata'); df_gtv_nodes <- df_ctdna_eqd2_radiomic_clinical
+# df_ctdna_eqd2_radiomic_clinical <- df_ctdna_eqd2_radiomic_clinical
+```
+
+The basic workflow i'm going to use is select the sample ID's that relate to the specific condition and then make the ggplot from that.
+
+# Basic Visualization of features
+
+## T- Category
+
+```{r ,fig.width=15,fig.height=4}
+#################
+# N Category = N0 
+#################
+stat_tcat = df_OPC %>% 
+  filter(stage_t_ajcc8 == "T1" & Timepoint == "Baseline") 
+
+df_test = df_prop_jinfeng %>% 
+  filter(Sample %in% stat_tcat$Sample) %>% 
+  pivot_longer(cols = 2:202, names_to = "Variable", values_to = "Value") %>% 
+  mutate(Variable = as.integer(Variable)) 
+
+# Calculating means, standard deviations, and min/max values
+df_summary = df_test %>%
+  group_by(Variable) %>%
+  summarize(
+    Mean = mean(Value),
+    SD = sd(Value),
+    SE = SD / sqrt(n()),  # Standard Error
+    Min = min(Value),
+    Max = max(Value)
+  )
+
+# ggplot(df_test,aes(x=Variable,y=Value,group=Sample)) +
+#   geom_line() + labs(
+#     x = "Fragment Length (bp)",
+#     y = "Proportion")
+
+
+a = ggplot(df_test, aes(x=Variable, y=Value, group=Sample)) +
+  geom_line(alpha=0.4) + 
+  geom_line(data = df_summary, aes(x=Variable, y=Mean, group=1), size=1, color="black") + 
+  labs(x = "Fragment Length (bp)", y = "Proportion")
+
+#################
+# N Category = N1 
+#################
+stat_tcat = df_OPC %>% 
+  filter(stage_t_ajcc8 == "T2" & Timepoint == "Baseline") 
+
+df_test = df_prop_jinfeng %>% 
+  filter(Sample %in% stat_tcat$Sample) %>% 
+  pivot_longer(cols = 2:202, names_to = "Variable", values_to = "Value") %>% 
+  mutate(Variable = as.integer(Variable)) 
+
+# Calculating means, standard deviations, and min/max values
+df_summary = df_test %>%
+  group_by(Variable) %>%
+  summarize(
+    Mean = mean(Value),
+    SD = sd(Value),
+    SE = SD / sqrt(n()),  # Standard Error
+    Min = min(Value),
+    Max = max(Value)
+  )
+
+# ggplot(df_test,aes(x=Variable,y=Value,group=Sample)) +
+#   geom_line() + labs(
+#     x = "Fragment Length (bp)",
+#     y = "Proportion")
+
+
+b = ggplot(df_test, aes(x=Variable, y=Value, group=Sample)) +
+  geom_line(alpha=0.4) + 
+  geom_line(data = df_summary, aes(x=Variable, y=Mean, group=1), size=1, color="black") + 
+  labs(x = "Fragment Length (bp)", y = "Proportion")
+
+#################
+# N Category = N1 
+#################
+stat_tcat = df_OPC %>% 
+  filter(stage_t_ajcc8 == "T3" & Timepoint == "Baseline") 
+
+df_test = df_prop_jinfeng %>% 
+  filter(Sample %in% stat_tcat$Sample) %>% 
+  pivot_longer(cols = 2:202, names_to = "Variable", values_to = "Value") %>% 
+  mutate(Variable = as.integer(Variable)) 
+
+# Calculating means, standard deviations, and min/max values
+df_summary = df_test %>%
+  group_by(Variable) %>%
+  summarize(
+    Mean = mean(Value),
+    SD = sd(Value),
+    SE = SD / sqrt(n()),  # Standard Error
+    Min = min(Value),
+    Max = max(Value)
+  )
+
+# ggplot(df_test,aes(x=Variable,y=Value,group=Sample)) +
+#   geom_line() + labs(
+#     x = "Fragment Length (bp)",
+#     y = "Proportion")
+
+
+c = ggplot(df_test, aes(x=Variable, y=Value, group=Sample)) +
+  geom_line(alpha=0.4) + 
+  geom_line(data = df_summary, aes(x=Variable, y=Mean, group=1), size=1, color="black") + 
+  labs(x = "Fragment Length (bp)", y = "Proportion")
+
+
+#################
+# N Category = N3 
+#################
+stat_tcat = df_OPC %>% 
+  filter(stage_t_ajcc8 == "T4" & Timepoint == "Baseline") 
+
+df_test = df_prop_jinfeng %>% 
+  filter(Sample %in% stat_tcat$Sample) %>% 
+  pivot_longer(cols = 2:202, names_to = "Variable", values_to = "Value") %>% 
+  mutate(Variable = as.integer(Variable)) 
+
+# Calculating means, standard deviations, and min/max values
+df_summary = df_test %>%
+  group_by(Variable) %>%
+  summarize(
+    Mean = mean(Value),
+    SD = sd(Value),
+    SE = SD / sqrt(n()),  # Standard Error
+    Min = min(Value),
+    Max = max(Value)
+  )
+
+# ggplot(df_test,aes(x=Variable,y=Value,group=Sample)) +
+#   geom_line() + labs(
+#     x = "Fragment Length (bp)",
+#     y = "Proportion")
+
+
+d = ggplot(df_test, aes(x=Variable, y=Value, group=Sample)) +
+  geom_line(alpha=0.4) + 
+  geom_line(data = df_summary, aes(x=Variable, y=Mean, group=1), size=1, color="black") + 
+  labs(x = "Fragment Length (bp)", y = "Proportion")
+
+ggarrange(a,b,c,d,ncol = 4,nrow=1)
+```
+
+## N- Category
+
+```{r ,fig.width=15,fig.height=4}
+#################
+# N Category = N0 
+#################
+stat_tcat = df_OPC %>% 
+  filter(stage_n_ajcc8 == "N0" & Timepoint == "Baseline") 
+
+df_test = df_prop_jinfeng %>% 
+  filter(Sample %in% stat_tcat$Sample) %>% 
+  pivot_longer(cols = 2:202, names_to = "Variable", values_to = "Value") %>% 
+  mutate(Variable = as.integer(Variable)) 
+
+# Calculating means, standard deviations, and min/max values
+df_summary = df_test %>%
+  group_by(Variable) %>%
+  summarize(
+    Mean = mean(Value),
+    SD = sd(Value),
+    SE = SD / sqrt(n()),  # Standard Error
+    Min = min(Value),
+    Max = max(Value)
+  )
+
+# ggplot(df_test,aes(x=Variable,y=Value,group=Sample)) +
+#   geom_line() + labs(
+#     x = "Fragment Length (bp)",
+#     y = "Proportion")
+
+
+a = ggplot(df_test, aes(x=Variable, y=Value, group=Sample)) +
+  geom_line(alpha=0.4) + 
+  geom_line(data = df_summary, aes(x=Variable, y=Mean, group=1), size=1, color="black") + 
+  labs(x = "Fragment Length (bp)", y = "Proportion")
+
+#################
+# N Category = N1 
+#################
+stat_tcat = df_OPC %>% 
+  filter(stage_n_ajcc8 == "N1" & Timepoint == "Baseline") 
+
+df_test = df_prop_jinfeng %>% 
+  filter(Sample %in% stat_tcat$Sample) %>% 
+  pivot_longer(cols = 2:202, names_to = "Variable", values_to = "Value") %>% 
+  mutate(Variable = as.integer(Variable)) 
+
+# Calculating means, standard deviations, and min/max values
+df_summary = df_test %>%
+  group_by(Variable) %>%
+  summarize(
+    Mean = mean(Value),
+    SD = sd(Value),
+    SE = SD / sqrt(n()),  # Standard Error
+    Min = min(Value),
+    Max = max(Value)
+  )
+
+# ggplot(df_test,aes(x=Variable,y=Value,group=Sample)) +
+#   geom_line() + labs(
+#     x = "Fragment Length (bp)",
+#     y = "Proportion")
+
+
+b = ggplot(df_test, aes(x=Variable, y=Value, group=Sample)) +
+  geom_line(alpha=0.4) + 
+  geom_line(data = df_summary, aes(x=Variable, y=Mean, group=1), size=1, color="black") + 
+  labs(x = "Fragment Length (bp)", y = "Proportion")
+
+#################
+# N Category = N1 
+#################
+stat_tcat = df_OPC %>% 
+  filter(stage_n_ajcc8 == "N2" & Timepoint == "Baseline") 
+
+df_test = df_prop_jinfeng %>% 
+  filter(Sample %in% stat_tcat$Sample) %>% 
+  pivot_longer(cols = 2:202, names_to = "Variable", values_to = "Value") %>% 
+  mutate(Variable = as.integer(Variable)) 
+
+# Calculating means, standard deviations, and min/max values
+df_summary = df_test %>%
+  group_by(Variable) %>%
+  summarize(
+    Mean = mean(Value),
+    SD = sd(Value),
+    SE = SD / sqrt(n()),  # Standard Error
+    Min = min(Value),
+    Max = max(Value)
+  )
+
+# ggplot(df_test,aes(x=Variable,y=Value,group=Sample)) +
+#   geom_line() + labs(
+#     x = "Fragment Length (bp)",
+#     y = "Proportion")
+
+
+c = ggplot(df_test, aes(x=Variable, y=Value, group=Sample)) +
+  geom_line(alpha=0.4) + 
+  geom_line(data = df_summary, aes(x=Variable, y=Mean, group=1), size=1, color="black") + 
+  labs(x = "Fragment Length (bp)", y = "Proportion")
+
+
+#################
+# N Category = N3 
+#################
+stat_tcat = df_OPC %>% 
+  filter(stage_n_ajcc8 == "N3" & Timepoint == "Baseline") 
+
+df_test = df_prop_jinfeng %>% 
+  filter(Sample %in% stat_tcat$Sample) %>% 
+  pivot_longer(cols = 2:202, names_to = "Variable", values_to = "Value") %>% 
+  mutate(Variable = as.integer(Variable)) 
+
+# Calculating means, standard deviations, and min/max values
+df_summary = df_test %>%
+  group_by(Variable) %>%
+  summarize(
+    Mean = mean(Value),
+    SD = sd(Value),
+    SE = SD / sqrt(n()),  # Standard Error
+    Min = min(Value),
+    Max = max(Value)
+  )
+
+# ggplot(df_test,aes(x=Variable,y=Value,group=Sample)) +
+#   geom_line() + labs(
+#     x = "Fragment Length (bp)",
+    # y = "Proportion")
+
+
+d = ggplot(df_test, aes(x=Variable, y=Value, group=Sample)) +
+  geom_line(alpha=0.4) + 
+  geom_line(data = df_summary, aes(x=Variable, y=Mean, group=1), size=1, color="black") + 
+  labs(x = "Fragment Length (bp)", y = "Proportion")
+
+ggarrange(a,b,c,d,ncol = 4,nrow=1)
+```
+
+## Overall Stage
+
+```{r ,fig.width=15,fig.height=4}
+#################
+# Stage I 
+#################
+stat_tcat = df_OPC %>% 
+  filter(stage_ajcc8 == "I" & Timepoint == "Baseline") 
+
+df_test = df_prop_jinfeng %>% 
+  filter(Sample %in% stat_tcat$Sample) %>% 
+  pivot_longer(cols = 2:202, names_to = "Variable", values_to = "Value") %>% 
+  mutate(Variable = as.integer(Variable)) 
+
+# Calculating means, standard deviations, and min/max values
+df_summary = df_test %>%
+  group_by(Variable) %>%
+  summarize(
+    Mean = mean(Value),
+    SD = sd(Value),
+    SE = SD / sqrt(n()),  # Standard Error
+    Min = min(Value),
+    Max = max(Value)
+  )
+
+# ggplot(df_test,aes(x=Variable,y=Value,group=Sample)) +
+#   geom_line() + labs(
+#     x = "Fragment Length (bp)",
+#     y = "Proportion")
+
+
+a = ggplot(df_test, aes(x=Variable, y=Value, group=Sample)) +
+  geom_line(alpha=0.4) + 
+  geom_line(data = df_summary, aes(x=Variable, y=Mean, group=1), size=1, color="black") + 
+  labs(x = "Fragment Length (bp)", y = "Proportion")
+
+#################
+# Stage II
+#################
+stat_tcat = df_OPC %>% 
+  filter(stage_ajcc8 == "II" & Timepoint == "Baseline") 
+
+df_test = df_prop_jinfeng %>% 
+  filter(Sample %in% stat_tcat$Sample) %>% 
+  pivot_longer(cols = 2:202, names_to = "Variable", values_to = "Value") %>% 
+  mutate(Variable = as.integer(Variable)) 
+
+# Calculating means, standard deviations, and min/max values
+df_summary = df_test %>%
+  group_by(Variable) %>%
+  summarize(
+    Mean = mean(Value),
+    SD = sd(Value),
+    SE = SD / sqrt(n()),  # Standard Error
+    Min = min(Value),
+    Max = max(Value)
+  )
+
+# ggplot(df_test,aes(x=Variable,y=Value,group=Sample)) +
+#   geom_line() + labs(
+#     x = "Fragment Length (bp)",
+#     y = "Proportion")
+
+
+b = ggplot(df_test, aes(x=Variable, y=Value, group=Sample)) +
+  geom_line(alpha=0.4) + 
+  geom_line(data = df_summary, aes(x=Variable, y=Mean, group=1), size=1, color="black") + 
+  labs(x = "Fragment Length (bp)", y = "Proportion")
+
+#################
+# Stage III
+#################
+stat_tcat = df_OPC %>% 
+  filter(stage_ajcc8 == "III" & Timepoint == "Baseline") 
+
+df_test = df_prop_jinfeng %>% 
+  filter(Sample %in% stat_tcat$Sample) %>% 
+  pivot_longer(cols = 2:202, names_to = "Variable", values_to = "Value") %>% 
+  mutate(Variable = as.integer(Variable)) 
+
+# Calculating means, standard deviations, and min/max values
+df_summary = df_test %>%
+  group_by(Variable) %>%
+  summarize(
+    Mean = mean(Value),
+    SD = sd(Value),
+    SE = SD / sqrt(n()),  # Standard Error
+    Min = min(Value),
+    Max = max(Value)
+  )
+
+# ggplot(df_test,aes(x=Variable,y=Value,group=Sample)) +
+#   geom_line() + labs(
+#     x = "Fragment Length (bp)",
+#     y = "Proportion")
+
+
+c = ggplot(df_test, aes(x=Variable, y=Value, group=Sample)) +
+  geom_line(alpha=0.4) + 
+  geom_line(data = df_summary, aes(x=Variable, y=Mean, group=1), size=1, color="black") + 
+  labs(x = "Fragment Length (bp)", y = "Proportion")
+
+ggarrange(a,b,c,ncol=3)
+```
+
+# Fragment Length
+
+## Fragment length proportion by group.
+
+```{r}
+df_under150a <- df_prop_jinfeng %>%
+  # Calculate the sum of columns 3 through 603
+  mutate(hpv_prop_sum = rowSums(.[, 3:102])) %>% 
+  select(Sample,hpv_prop_sum) %>% 
+  left_join(select(df_OPC,Sample,patient,Timepoint,stage_n_ajcc8,stage_t_ajcc8,stage_ajcc8),by = "Sample") %>% 
+  filter(Timepoint == "Baseline" & !is.na(stage_n_ajcc8))
+
+df_under150 <- df_prop_healthy %>%
+  mutate(hpv_prop_sum = rowSums(.[, 3:102])) %>% 
+  select(Sample,hpv_prop_sum) %>% 
+  left_join(select(df_OPC,Sample,patient,Timepoint,stage_n_ajcc8,stage_t_ajcc8,stage_ajcc8),by = "Sample") %>% 
+  mutate(stage_n_ajcc8 = "HUCON",
+         stage_t_ajcc8 = "HUCON",
+         stage_ajcc8= "HUCON") %>% 
+  rbind(df_under150a)
+
+ggplot(df_under150, aes(x=stage_n_ajcc8, y=hpv_prop_sum)) +
+  geom_boxplot() + stat_compare_means() + geom_jitter(alpha=0.3)
+
+ggplot(df_under150, aes(x=stage_t_ajcc8, y=hpv_prop_sum)) +
+  geom_boxplot() + stat_compare_means() + geom_jitter(alpha=0.3)
+
+
+ggplot(df_under150, aes(x=stage_ajcc8, y=hpv_prop_sum)) +
+  geom_boxplot() + stat_compare_means() + geom_jitter(alpha=0.3)
+```
+
+# Fragment length proportion over time
+
+```{r}
+
+df_under150 <- df_prop_jinfeng %>%
+  # Calculate the sum of columns 3 through 603
+  mutate(hpv_prop_sum = rowSums(.[, 3:102])) %>% 
+  select(Sample,hpv_prop_sum) %>% 
+  left_join(select(df_OPC,Sample,patient,Timepoint,seq_copies_mL_corrected1.67,death,progression),by = "Sample")
+
+# fwrite(df_under150,"~/Desktop/human_fragprop_under150bp.txt",quote=F,row.names = F,sep="\t",col.names = T)
+
+# Filter out patients without a baseline measurement first
+filtered_df <- df_under150 %>%
+  group_by(patient) %>%
+  filter("Baseline" %in% Timepoint)
+
+# Then, for the remaining patients, compute the ratios
+result <- filtered_df %>%
+  mutate(baseline_hpv = hpv_prop_sum[Timepoint == "Baseline"]) %>%
+  mutate(ratio = hpv_prop_sum / baseline_hpv) %>%
+  select(-baseline_hpv) %>%  # Optionally remove the baseline column
+  mutate(Timepoint = case_when(
+    Timepoint == "Baseline" ~ 1,
+    Timepoint == "Mid RT" ~ 2,
+    Timepoint == "Early RT" ~ 3,
+    Timepoint == "3 Month" ~ 4,
+    TRUE ~ 5
+  ))
+
+stat_tcat = df_OPC %>%
+  filter(progression == TRUE)
+
+df_test = result %>% 
+  filter(patient %in% stat_tcat$patient) %>% 
+  left_join(select(df_OPC,death,stage_n_ajcc8,Sample),by="Sample")
+
+ggplot(df_test, aes(x=Timepoint, y=ratio, group=patient)) +
+  geom_line(alpha=0.5) +
+  labs(x = "Time", y = "Proportion change since baseline")+
+  facet_wrap(~stage_n_ajcc8)
+
+# ggplot(df_test, aes(x=Timepoint, y=hpv_prop_sum, group=patient)) +
+#   geom_line(alpha=0.5) +
+#   labs(x = "Time", y = "Proportion <150bp")+
+#   facet_wrap(~stage_n_ajcc8)
+
+ggplot(df_test, aes(x=Timepoint, y=seq_copies_mL_corrected1.67, group=patient)) +
+  scale_y_log10() +
+  geom_line(alpha=0.5) +
+  labs(x = "Time", y = "ctDNA Concentration") +
+  facet_wrap(~stage_n_ajcc8)
+```
+
+# Association with GTV and Fragment proportion
+
+```{r, warning = FALSE, fig.width= 8, fig.height = 3}
+df_under150_healthy = df_prop_healthy %>% 
+  # Calculate the sum of columns 3 through 603
+  mutate(hpv_prop_sum = rowSums(.[, 3:102])) %>% 
+  select(Sample,hpv_prop_sum) %>% 
+  mutate(gtv_combined = 0, 
+         sum_gtv_nodes = 0,
+         gtv_primary = 0,
+         seq_copies_mL_corrected1.67 = 0) %>% 
+  mutate(Group = "Healthy") %>% 
+  select(-Sample)
+
+df_under150 <- df_prop_jinfeng %>%
+  mutate(hpv_prop_sum = rowSums(.[, 3:102])) %>% 
+  select(Sample,hpv_prop_sum) %>% 
+  left_join(select(df_OPC,Sample,patient,Timepoint,seq_copies_mL_corrected1.67,sum_gtv_nodes,gtv_primary),by = "Sample") %>% 
+  filter(Timepoint =="Baseline") %>% 
+  mutate(gtv_combined = sum_gtv_nodes + gtv_primary) %>% 
+  select(hpv_prop_sum,seq_copies_mL_corrected1.67,sum_gtv_nodes,gtv_primary,gtv_combined) %>% 
+  mutate(gtv_combined = log1p(gtv_combined),
+         sum_gtv_nodes = log1p(sum_gtv_nodes),
+         gtv_primary = log1p(gtv_primary),
+         seq_copies_mL_corrected1.67 = log1p(seq_copies_mL_corrected1.67)) %>%
+  mutate(Group = "Baseline") %>% 
+  rbind(df_under150_healthy)
+
+
+
+p_gtv1 = ggplot(df_under150, aes(x=gtv_primary, y=hpv_prop_sum,color=Group)) +
+  geom_point() + 
+  labs(x = "log(GTV primary)", y = "Proportion of Fragments <150bp")
+
+p_gtv2 = ggplot(df_under150, aes(x=sum_gtv_nodes, y=hpv_prop_sum,color=Group)) +
+  geom_point() + 
+  labs(x = "log(GTV nodes)", y = "Proportion of Fragments <150bp")
+
+p_gtv3 = ggplot(df_under150, aes(x=gtv_combined, y=hpv_prop_sum,color=Group)) +
+  geom_point() + 
+  labs(x = "log(GTV combined)", y = "Proportion of Fragments <150bp")
+
+ggarrange(p_gtv1,p_gtv2,p_gtv3,ncol=3,common.legend = TRUE)
+
+# ggpairs(df_under150,progress = FALSE)
+```
+
+# Simple linear model with Fragment length and ctDNA concentration
+
+```{r}
+# df_under150
+# sum_gtv_nodes+  gtv_primary
+lm_ctdna = lm( gtv_combined~ hpv_prop_sum,data = df_under150)
+summary(lm_ctdna)
+
+df_subset_prop_gtv <- df_under150 %>% 
+  select(-Group) 
+
+ggpairs(df_subset_prop_gtv)
+  
+```
+

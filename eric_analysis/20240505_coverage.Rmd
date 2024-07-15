@@ -1,0 +1,585 @@
+---
+title: "Untitled"
+output: html_document
+date: "2024-05-02"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Plot using ggplot2
+
+library(corrplot)
+library(cowplot)
+library(DataExplorer)
+library(data.table)
+library(dplyr)
+library(factoextra)
+library(faraway)
+library(forestmodel)
+library(ggExtra)
+library(GGally)
+library(ggplot2)
+library(ggpubr)
+library(ggthemr)
+library("ggsci")
+library(gridExtra)
+library(gt)
+library(gtsummary)
+library(plotly)
+library(rlang)
+library(survival)
+library(survminer)
+library(readxl)
+library(reshape2)
+library(tidyverse)
+library(data.table)
+library(heatmaply)
+library(hrbrthemes)
+library(colorspace)
+library(ggupset)
+library(UpSetR)
+library(ComplexHeatmap)
+library(ggpubr)
+library(survival)
+
+ggthemr("fresh")
+# https://nanx.me/ggsci/articles/ggsci-faq.html
+options(
+  ggplot2.discrete.colour = ggsci::scale_color_npg,
+  ggplot2.discrete.fill = ggsci::scale_fill_npg
+)
+```
+
+# Baseline coverage profiles
+
+```{r}
+df_OPC <- read_excel("~/Documents/1 Bratman/head_neck_analysis_lucas/data/Quantification/summ_OPC.v7.xlsx")
+colnames(df_OPC)[2] = c("patient")
+
+df_OPC = df_OPC %>% 
+  filter(Timepoint == "Baseline") %>% 
+  mutate(`file name` = Sample)
+
+df_coverage <- fread("~/Documents/1 Bratman/head_neck_analysis_lucas/data/coverage/20240502_coverage.csv",sep = ",",fill=FALSE,header=TRUE)
+
+df_coverage <- df_coverage %>%
+  filter(str_detect(`file name`, "HPV16")) %>%
+  mutate(`file name` = str_extract(`file name`, ".*(?=_hgUnmapped)")) %>%
+  filter(`file name` %in% df_OPC$`file name`) %>%
+  left_join(select(df_OPC,`file name`,patient)) %>%
+  select(patient,everything()) %>%
+  select(-`file name`) 
+
+df_coverage <- fread("~/Desktop/20240502_coverage.csv",sep = ",",fill=FALSE,header=TRUE)
+
+df_prop_coverage <- df_coverage %>%
+  filter(str_detect(`file name`, "HPV16")) %>%
+  mutate(`file name` = str_extract(`file name`, ".*(?=_hgUnmapped)")) %>%
+  filter(`file name` %in% df_OPC$`file name`) %>%
+  left_join(select(df_OPC,`file name`,patient)) %>%
+  select(patient,everything()) %>%
+  select(-`file name`) %>% 
+  mutate(total_sum = rowSums(.[, 2:7905])) %>%
+  mutate(across(2:7905, ~ . / total_sum)) %>%
+  select(-total_sum)
+
+# df_filtered$`file name`
+
+
+```
+
+```{r}
+df_coverage = df_prop_coverage
+# Assuming df_coverage is your data frame and it's already loaded
+for (i in 1:nrow(df_coverage)) {
+  name <- df_coverage[i, 1]  # Extract the name from the first column
+  row_to_plot <- t(as.matrix(df_coverage[i, -1]))  # Transpose and exclude the first column
+  
+  # Convert to data frame and add an x-axis
+  df_plot <- data.frame(
+    x = 1:length(row_to_plot),  # Create an index for x-axis
+    y = as.numeric(row_to_plot)  # Ensure y values are numeric
+  )
+  
+  # Plotting
+  plot_sample <- ggplot(df_plot, aes(x = x, y = y)) +
+    geom_line() +
+    labs(title = as.character(paste0(name,"_Baseline")), x = "Position (bp)", y = "Depth")
+  
+  # You may print the plot, save it, or use it as needed
+  # print(p)  # Important to use print() when plotting inside a loop in R
+  plot_name = paste0("~/Desktop/frag_prop_coverage_baseline/",name,"_frag_coverage_baseline_plot.png")
+  ggsave(plot_name, plot_sample, width = 4, height = 4, dpi = 300)
+}
+
+```
+
+# Mid RT coverage profiles
+
+```{r}
+df_OPC <- read_excel("~/Documents/1 Bratman/head_neck_analysis_lucas/data/Quantification/summ_OPC.v7.xlsx")
+colnames(df_OPC)[2] = c("patient")
+
+df_OPC = df_OPC %>% 
+  filter(Timepoint == "Mid RT") %>% 
+  mutate(`file name` = Sample)
+
+df_coverage <- fread("~/Desktop/20240502_coverage.csv",sep = ",",fill=FALSE,header=TRUE)
+
+df_coverage <- df_coverage %>%
+  filter(str_detect(`file name`, "HPV16")) %>%
+  mutate(`file name` = str_extract(`file name`, ".*(?=_hgUnmapped)")) %>%
+  filter(`file name` %in% df_OPC$`file name`) %>%
+  left_join(select(df_OPC,`file name`,patient)) %>%
+  select(patient,everything()) %>%
+  select(-`file name`)
+
+# df_filtered$`file name`
+```
+
+```{r}
+# Assuming df_coverage is your data frame and it's already loaded
+for (i in 1:nrow(df_coverage)) {
+  name <- df_coverage[i, 1]  # Extract the name from the first column
+  row_to_plot <- t(as.matrix(df_coverage[i, -1]))  # Transpose and exclude the first column
+  
+  # Convert to data frame and add an x-axis
+  df_plot <- data.frame(
+    x = 1:length(row_to_plot),  # Create an index for x-axis
+    y = as.numeric(row_to_plot)  # Ensure y values are numeric
+  )
+  
+  # Plotting
+  plot_sample <- ggplot(df_plot, aes(x = x, y = y)) +
+    geom_line() +
+    labs(title = as.character(paste0(name,"_MidRT")), x = "Position (bp)", y = "Depth")
+  
+  # You may print the plot, save it, or use it as needed
+  # print(p)  # Important to use print() when plotting inside a loop in R
+  plot_name = paste0("~/Desktop/frag_coverage_midRT/",name,"_frag_coverage_midRT_plot.png")
+  ggsave(plot_name, plot_sample, width = 4, height = 4, dpi = 300)
+}
+```
+
+# Coverage Nucleosome Positioning
+
+```{r, eval = FALSE}
+
+df_nucpos = fread("~/Desktop/input.bed.nucs.txt")
+# df_nucpos$`STD(fuzziness)`
+ggplot(df_nucpos, aes(x = `# Location`)) +
+  
+  # Vertical bars indicating the Peak_width
+  geom_segment(aes(xend = `# Location`, y = 0, yend = Peak_width), color = "darkblue", size = 2) 
+
++
+  
+  # Transparent shading horizontally around the Peak_width locations using STD(fuzziness)
+  geom_ribbon(aes(ymin = 0, ymax = Peak_width, xmin = `# Location` - `STD(fuzziness)`, xmax = `# Location` + `STD(fuzziness)`),
+              fill = "blue", alpha = 0.2) +
+  
+  # Additional labels, themes, and adjustments
+  labs(title = "Horizontal Bands Aligned to the x-axis",
+       x = "Location",
+       y = "Peak Width") +
+  theme_minimal()
+
+ggplot(df_nucpos, aes(x = `# Location`)) +
+  
+  # Add a horizontal band around each location based on Peak_width
+  geom_rect(aes(xmin = `# Location` - Peak_width / 2, xmax = `# Location` + Peak_width / 2, ymin = 0, ymax = 1),
+            fill = "darkblue", alpha = 0.2) +
+  
+    geom_rect(aes(xmin = `# Location`-5, xmax = `# Location`+5, ymin = 0, ymax = 1),
+            fill = "black", alpha = 1) +
+  
+  # Additional labels, themes, and adjustments
+  labs(x = "Nucleosome Position") +
+  theme_minimal() +
+  theme(axis.ticks.y = element_blank(), axis.text.y = element_blank())
+```
+
+# May 24, 2024
+
+# Baseline coverage profiles
+
+### All fragment lengths
+
+```{r}
+df_OPC <- read_excel("~/Documents/1 Bratman/head_neck_analysis_lucas/data/Quantification/summ_OPC.v7.xlsx")
+colnames(df_OPC)[2] = c("patient")
+
+df_OPC = df_OPC %>% 
+  filter(Timepoint == "Baseline") %>% 
+  mutate(`file name` = Sample)
+
+
+df_coverage <- fread("~/Documents/1 Bratman/head_neck_analysis_lucas/data/coverage/20240502_coverage.csv",sep = ",",fill=FALSE,header=TRUE)
+
+df_prop_coverage <- df_coverage %>%
+  filter(str_detect(`file name`, "HPV16")) %>%
+  mutate(`file name` = str_extract(`file name`, ".*(?=_hgUnmapped)")) %>%
+  filter(`file name` %in% df_OPC$`file name`) %>%
+  left_join(select(df_OPC,`file name`,patient)) %>%
+  mutate(across(everything(), ~replace(., is.na(.), 0))) %>% 
+  select(patient,everything()) %>%
+  select(-`file name`) %>% 
+  mutate(total_sum = rowSums(.[, 2:7905])) %>%
+  mutate(across(2:7905, ~ . / total_sum)) %>%
+  select(-total_sum)
+
+df_prop_coverage$type = "All Fragments"
+```
+
+### Fragments under 150bp
+
+```{r}
+df_OPC <- read_excel("~/Documents/1 Bratman/head_neck_analysis_lucas/data/Quantification/summ_OPC.v7.xlsx")
+colnames(df_OPC)[2] = c("patient")
+
+df_OPC = df_OPC %>% 
+  filter(Timepoint == "Baseline") %>% 
+  mutate(`file name` = Sample)
+
+df_coverage <- fread("~/Documents/1 Bratman/head_neck_analysis_lucas/data/coverage/HPV_Coverage_summary_under150bp.csv",sep = ",",fill=FALSE,header=TRUE)
+
+
+df_prop_coverage_under150 <- df_coverage %>%
+  filter(str_detect(`file name`, "HPV16")) %>%
+  mutate(`file name` = str_extract(`file name`, ".*(?=_hgUnmapped)")) %>%
+  filter(`file name` %in% df_OPC$`file name`) %>%
+  left_join(select(df_OPC,`file name`,patient)) %>% 
+  mutate(across(everything(), ~replace(., is.na(.), 0))) %>% 
+  select(patient,everything()) %>%
+  select(-`file name`) %>% 
+  mutate(total_sum = rowSums(.[, 2:7905])) %>%
+  mutate(across(2:7905, ~ . / total_sum)) %>%
+  select(-total_sum) 
+
+df_prop_coverage_under150$type = "<150bp"
+```
+
+### Fragmenths over 150bp
+
+```{r}
+df_OPC <- read_excel("~/Documents/1 Bratman/head_neck_analysis_lucas/data/Quantification/summ_OPC.v7.xlsx")
+colnames(df_OPC)[2] = c("patient")
+
+df_OPC = df_OPC %>% 
+  filter(Timepoint == "Baseline") %>% 
+  mutate(`file name` = Sample)
+
+df_coverage <- fread("~/Documents/1 Bratman/head_neck_analysis_lucas/data/coverage/HPV_Coverage_summary_over150bp.csv",sep = ",",fill=FALSE,header=TRUE)
+
+
+df_prop_coverage_over150 <- df_coverage %>%
+  filter(str_detect(`file name`, "HPV16")) %>%
+  mutate(`file name` = str_extract(`file name`, ".*(?=_hgUnmapped)")) %>%
+  filter(`file name` %in% df_OPC$`file name`) %>%
+  left_join(select(df_OPC,`file name`,patient)) %>%
+  mutate(across(everything(), ~replace(., is.na(.), 0))) %>% 
+  select(patient,everything()) %>%
+  select(-`file name`) %>% 
+  mutate(total_sum = rowSums(.[, 2:7905])) %>%
+  mutate(across(2:7905, ~ . / total_sum)) %>%
+  select(-total_sum) 
+
+df_prop_coverage_over150$type = ">150bp"
+```
+
+# Fragment length coverage summary per patient
+
+## Baseline with all three types of plots 
+
+```{r}
+df_coverage_baseline = rbind(df_prop_coverage,df_prop_coverage_under150,df_prop_coverage_over150)
+
+df_integration_sites = fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/Quantification/SearcHPV_OPC.txt")
+
+df_OPC = read_xlsx("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/Quantification/summ_OPC.v7.xlsx")
+
+df_integration_sites = df_integration_sites %>% 
+  select(Sample,hpvInsertionPoint) %>% 
+  left_join(select(df_OPC,Sample,Patient))
+
+patient_ID = unique(df_coverage_baseline$patient)
+
+list_cov1 <- list()
+
+
+for (i in 1:length(patient_ID)) { #length(patient_ID)
+  name <- patient_ID[i]
+  
+  # Filter and transform the data for the current patient
+  df_coverage_long <- df_coverage_baseline %>%
+    filter(patient %in% patient_ID[i]) %>%
+    select(-patient) %>%
+    pivot_longer(cols = -c(type), names_to = "length", values_to = "proportion") %>%
+    mutate(length = as.numeric(length))
+
+  df_int_patient = df_integration_sites %>% 
+    filter(Patient %in% patient_ID[i])
+  
+  
+  # Create ggplot object
+  plot_sample <- ggplot(df_coverage_long, aes(x = length, y = proportion, color = type, group = type, alpha = type)) +
+    geom_line() +
+    labs(x = "Position (bp)", y = "Depth") +
+    scale_alpha_manual(values = c('All Fragments' = 1, '>150bp' = 0.35, '<150bp' = 0.25)) +
+    scale_color_manual(values = c('All Fragments' = 'black', '>150bp' = "maroon", '<150bp' = 'blue')) +
+    guides(color = guide_legend(keywidth = 2)) +
+    geom_vline(data = df_int_patient, aes(xintercept = hpvInsertionPoint), linetype = "dashed", color = "red")
+  
+  # Initialize sublist for the current patient if it doesn't exist
+  if (!is.list(list_cov1[[name]])) {
+    list_cov1[[name]] <- vector("list", 4)  # Assuming there are 4 timepoints
+  }
+  
+  # Store the plot in the first timepoint placeholder
+  list_cov1[[name]][[1]] <- plot_sample
+  
+  # Print the plot
+  # print(plot_sample)
+}
+
+list_cov1[["HN2645"]]
+```
+
+## All other plots with only the average
+
+```{r}
+df_OPC <- read_excel("~/Documents/1 Bratman/head_neck_analysis_lucas/data/Quantification/summ_OPC.v7.xlsx")
+colnames(df_OPC)[2] = c("patient")
+
+df_OPC = df_OPC %>% 
+  filter(Timepoint != "Baseline") %>% 
+  mutate(`file name` = Sample)
+
+
+df_coverage <- fread("~/Documents/1 Bratman/head_neck_analysis_lucas/data/coverage/20240502_coverage.csv",sep = ",",fill=FALSE,header=TRUE)
+
+df_prop_coverage <- df_coverage %>%
+  filter(str_detect(`file name`, "HPV16")) %>%
+  mutate(`file name` = str_extract(`file name`, ".*(?=_hgUnmapped)")) %>%
+  filter(`file name` %in% df_OPC$`file name`) %>%
+  left_join(select(df_OPC,`file name`,patient,Timepoint)) %>%
+  mutate(across(everything(), ~replace(., is.na(.), 0))) %>% 
+  select(patient,everything()) %>%
+  select(-`file name`) %>% 
+  mutate(total_sum = rowSums(.[, 2:7905])) %>%
+  mutate(across(2:7905, ~ . / total_sum)) %>%
+  select(-total_sum) %>% 
+  dplyr::select(patient,Timepoint, everything())
+
+```
+
+```{r}
+patient_ID <- unique(df_prop_coverage$patient)
+
+# Initialize the outer list
+list_cov2 <- list()
+
+for (i in 1:length(patient_ID)) {   #length(patient_ID)
+  # Filter data for the current patient
+  df_high167_long <- df_prop_coverage %>%
+    filter(patient %in% patient_ID[i]) %>%
+    select(-patient) %>%
+    pivot_longer(cols = -c(Timepoint), names_to = "length", values_to = "proportion") %>%
+    mutate(length = as.numeric(length))
+
+  # Get unique timepoints
+  timepoints <- unique(df_high167_long$Timepoint)
+  # Initialize a sublist for the current patient
+  patient_plots <- vector("list", length = 4)  # Assuming there are 4 possible timepoints T1, T2, T3, T4
+  
+  for (tp in timepoints) {
+    # Filter data for the specific timepoint
+    df_timepoint <- df_high167_long %>%
+      filter(Timepoint == tp)
+
+    # Create ggplot object for the specific timepoint
+    plot_sample <- ggplot(df_timepoint, aes(x = length, y = proportion, color = Timepoint, group = Timepoint)) +
+      geom_line() +
+      labs(x = "Position (bp)",
+           y = "Depth") + guides(color = guide_legend(keywidth = 2))
+
+    # Assign the plot to the corresponding position in the sublist
+    timepoint_index <- match(tp, c("Baseline", "Early RT", "Mid RT", "3 Month"))
+    patient_plots[[timepoint_index]] <- plot_sample
+  }
+
+  # Assign the sublist to the outer list
+  list_cov2[[patient_ID[i]]] <- patient_plots
+}
+
+list_cov2[[2]]
+```
+
+## Combine the above lists together. 
+
+```{r}
+patient_IDs <- unique(c(names(list_cov1), names(list_cov2)))
+
+list_cov <- list()
+
+# Iterate through each patient ID
+for (patient in patient_IDs) {
+  # Initialize sublist for the current patient
+  combined_sublists <- vector("list", 4)
+  
+  # Combine sublists from list_cov1 and list_cov2
+  if (!is.null(list_cov1[[patient]])) {
+    combined_sublists[1] <- list_cov1[[patient]][1]
+  }
+  if (!is.null(list_cov2[[patient]])) {
+    combined_sublists[2:4] <- list_cov2[[patient]][2:4]
+  }
+  
+  # Assign the combined sublist to the merged list
+  list_cov[[patient]] <- combined_sublists
+}
+
+list_cov[[24]]
+```
+
+# Fragment Length
+
+```{r}
+df_clinical_opc = fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/clincalData/20240414_clinical_OPC.txt")
+
+
+
+df_clinical_opc$Sample <- gsub("_L.*", "", df_clinical_opc$Sample)
+
+df_fragment_hpv_1 = fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/fragmentLength/20240414_fragmentlength.txt")
+
+df_fragment_hpv_2 = fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/fragmentLength/20240415_fraglength_jinfeng.txt")
+df_fragment_hpv_2$Sample <- gsub("_L.*", "", df_fragment_hpv_2$Sample)
+df_fragment_hpv_2$Sample <- gsub("_hg.*", "", df_fragment_hpv_2$Sample)
+df_fragment_hpv_2$Timepoint = "3 Month"
+df_fragment_hpv_2 = df_fragment_hpv_2 %>% 
+  filter(Sample != "OPC-ReSeq_Cap1_7_S139")
+
+
+df_fragment_hpv = rbind(df_fragment_hpv_1,df_fragment_hpv_2)
+remove(df_fragment_hpv_1,df_fragment_hpv_2)
+
+
+
+df_prop_virus <- df_fragment_hpv %>%
+  # Calculate the sum of columns 3 through 603
+  mutate(total_sum = rowSums(.[, 53:253])) %>%
+  dplyr::select(Sample, everything()) %>%
+  left_join(dplyr::select(df_clinical_opc, Sample, Timepoint,patient),by=c("Sample","Timepoint")) %>% 
+  filter(total_sum > 1) %>%
+  # Divide each column by the respective total_sum
+  mutate(across(53:253, ~ . / total_sum)) %>% 
+  dplyr::select(Sample,Timepoint,patient,53:253) %>%
+  arrange(Sample)
+
+
+```
+
+```{r}
+# List of patient IDs
+patient_ID <- unique(df_prop_virus$patient)
+
+# Initialize the outer list
+list_fraglength <- list()
+
+for (i in 1:length(patient_ID)) { 
+  # Filter data for the current patient
+  df_high167_long <- df_prop_virus %>%
+    filter(patient %in% patient_ID[i]) %>%
+    select(-Sample, -patient) %>%
+    pivot_longer(cols = -c(Timepoint), names_to = "length", values_to = "proportion") %>%
+    mutate(length = as.numeric(length))
+
+  # Get unique timepoints
+  timepoints <- unique(df_high167_long$Timepoint)
+  # Initialize a sublist for the current patient
+  patient_plots <- vector("list", length = 4)  # Assuming there are 4 possible timepoints T1, T2, T3, T4
+  
+  for (tp in timepoints) {
+    # Filter data for the specific timepoint
+    df_timepoint <- df_high167_long %>%
+      filter(Timepoint == tp)
+
+    # Create ggplot object for the specific timepoint
+    plot_sample <- ggplot(df_timepoint, aes(x = length, y = proportion)) +
+      geom_line() +
+      labs(x = "Length",
+           y = "Proportion") 
+
+
+    # Assign the plot to the corresponding position in the sublist
+    timepoint_index <- match(tp, c("Baseline", "Early RT", "Mid RT", "3 Month"))
+    patient_plots[[timepoint_index]] <- plot_sample
+  }
+
+  # Assign the sublist to the outer list
+  list_fraglength[[patient_ID[i]]] <- patient_plots
+}
+
+list_fraglength[[70]]
+```
+
+# Combined plot of lists
+
+```{r}
+placeholder_plot <- function() {
+  ggplot() + 
+    theme_void() + 
+    geom_text(aes(0.5, 0.5, label = "No data"), size = 10, color = "grey") +
+    theme(plot.margin = margin(1, 1, 1, 1, "cm"))
+}
+
+# Function to create ggarrange for each patient
+create_patient_plot <- function(patient_plots) {
+  plots <- lapply(patient_plots, function(plot) {
+    if (is.null(plot)) {
+      placeholder_plot()
+    } else {
+      plot
+    }
+  })
+  ggarrange(plotlist = plots, ncol = 1, nrow = 4)
+}
+
+g1 = create_patient_plot(list_fraglength[["HN2126"]])
+g2 = create_patient_plot(list_cov[["HN2126"]])
+
+
+combined_plot <- plot_grid(g1, g2, ncol = 2, rel_widths = c(1, 4))
+print(combined_plot)
+```
+
+# Combine together!!
+
+```{r}
+patient_IDs <- intersect(names(list_cov), names(list_fraglength))
+
+output_dir <- "~/Documents/Combined_data"
+
+# Create the output directory if it doesn't exist
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+# Iterate over the common patient IDs
+for (patient_id in patient_IDs) {
+  # Create the plots for the current patient
+  g1 <- create_patient_plot(list_fraglength[[patient_id]])
+  g2 <- create_patient_plot(list_cov[[patient_id]])
+  
+  # Combine the plots
+  combined_plot <- plot_grid(g1, g2, ncol = 2, rel_widths = c(1, 4))
+  
+  # Define the file path for saving the combined plot
+  file_path <- file.path(output_dir, paste0(patient_id, "_combined_plot.png"))
+  
+  # Save the combined plot
+  ggsave(file_path, combined_plot, width = 10, height = 5)
+}
+```

@@ -1,0 +1,731 @@
+---
+title: "Fragmentomic Analysis"
+output: html_document
+date: "2023-11-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+library(caret)
+library(DataExplorer)
+library(data.table)
+library(dplyr)
+library(faraway)
+library(forestmodel)
+library(ggbeeswarm)
+library(ggplot2)
+library(ggpubr)
+# library(ggthemr)
+library(gridExtra)
+library(NMF)
+library(rlang)
+library(survival)
+library(survminer)
+library(readxl)
+library(tidyverse)
+library(viridis)
+
+
+
+```
+
+```{r}
+###########
+# Read OPC
+###########
+
+df_OPC <- read_excel("~/Documents/1 Bratman/head_neck_analysis_lucas/data/Quantification/summ_OPC.v6.xlsx")
+colnames(df_OPC)[1] = c("filename")
+colnames(df_OPC)[19] = c("timepoint")
+df_OPC$timepoint <- gsub("-", "", df_OPC$timepoint)
+# 
+# reseq_remove = readLines("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/re-sequenced-remove.txt")
+# 
+# reseq_remove = df_OPC %>%
+#   filter(`Library Name` %in% reseq_remove) %>%
+#   select(`Library Name`,filename)
+
+
+################
+# read frags in and filter 
+################
+
+df_hg_frag = fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/20231115_hg19_fragmentSize_LucasUpdated_pt1.csv")
+df_hg_frag1 = fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/20231115_hg19_fragmentSize_LucasUpdated_pt2.csv")
+df_hg_frag_healthy = fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/fragment_length_summary_healthy.csv")
+# df_virus_frag = fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/20231115_virus_fragmentSize_LucasUpdated_pt1.csv") 
+# df_virus_frag1 = fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/20231120_virus_reseq_fragment_length_summary.csv") 
+df_virus_frag = fread("/Users/lucaspenny/Desktop/fragment_length_summary.csv")
+
+df_hg_frag = df_hg_frag %>% 
+  rbind(df_hg_frag1)
+
+df_OPC <- bind_rows(df_OPC, select(df_hg_frag_healthy, filename))
+
+
+
+########
+# split for virus 
+########
+# Function to split and extract the desired parts
+split_and_extract <- function(x,name) {
+  split_1 <- unlist(strsplit(x, name))
+  part_1 <- split_1[1]
+  part_2 <- unlist(strsplit(split_1[2], "\\."))[1]
+  return(c(part_1, part_2))
+}
+
+# Apply the function to each element of the column and create two new columns
+# df_virus_frag$virus <- sapply(df_virus_frag$filename, function(x) split_and_extract(x,"_metrics.txt")[2])
+df_virus_frag$filename <- sapply(df_virus_frag$filename, function(x) split_and_extract(x,"_metrics.txt")[1])
+
+
+#########
+# split for human
+########
+
+df_hg_frag$filename <- gsub("_output_met.*", "", df_hg_frag$filename)
+# df_virus_frag1$filename <- gsub("_metrics.txt", "", df_virus_frag1$filename)
+# df_virus_frag1$virus = "HPV16Aligned"
+# 
+# df_virus_frag = df_virus_frag %>% 
+#   rbind(df_virus_frag1)
+
+########
+# filter out by bad sequencing 
+
+df_hg_frag = df_hg_frag %>% 
+  filter(filename %in% df_OPC$filename) %>% 
+  rbind(df_hg_frag_healthy)
+
+# df_virus_frag = df_virus_frag %>% 
+  # filter(filename %in% df_OPC$filename)
+                     
+                     
+
+
+##########
+# read clinical
+##########
+
+df_clinical = fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/clinical_data.tsv")
+df_clinical = df_clinical %>%
+  mutate(Patient_ID = patient) %>% 
+  left_join(df_OPC %>% dplyr::select(filename,Patient_ID))
+
+
+attach('/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/HPV_analysis_dataframes.Rdata'); df_gtv_nodes <- df_gtv_nodes
+attach('/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/HPV_analysis_dataframes.Rdata'); df_gtv_primary <- df_gtv_primary
+
+df_clinical = df_clinical %>%
+  mutate(Patient_ID = patient) %>% 
+  left_join(df_OPC %>% dplyr::select(filename,Patient_ID)) %>% 
+  left_join(df_gtv_nodes, by = "patient") %>% 
+  left_join(df_gtv_primary, by = "patient")
+```
+
+```{r}
+
+###########
+# Process the files
+###########
+
+df_prop_virus <- df_virus_frag %>%
+  # Calculate the sum of columns 3 through 603
+  mutate(total_sum = rowSums(.[, 3:603])) %>%
+  # filter(virus == "HPV16Aligned") %>% 
+  dplyr::select(filename, everything()) %>%
+  left_join(dplyr::select(df_OPC, filename, timepoint), by = "filename") %>% 
+  filter(timepoint == "Baseline"  & READ_PAIRS > 500) %>%  #POSSIBLY CHANGE
+  # Divide each column by the respective total_sum
+  mutate(across(3:603, ~ . / total_sum)) %>% 
+  dplyr::select(-READ_PAIRS, -V604, -timepoint,-total_sum,) %>%
+  arrange(filename)
+
+df_prop_hg <- df_hg_frag %>%
+  # Calculate the sum of columns 3 through 603
+  mutate(total_sum = rowSums(.[, 3:603])) %>%
+  dplyr::select(filename, everything()) %>%
+  left_join(dplyr::select(df_OPC, filename, timepoint), by = "filename") %>% 
+  filter(timepoint == "Baseline"| is.na(timepoint)) %>% 
+  # Divide each column by the respective total_sum
+  mutate(across(3:603, ~ . / total_sum)) %>% 
+  dplyr::select(-READ_PAIRS, -V604, -timepoint,-total_sum) %>%
+  # filter(filename %in% df_prop_virus$filename) %>%
+  arrange(filename)
+
+# df_prop_subtracted <- df_prop_hg %>% 
+#   # substract column 2:602 from df_prop_virus
+#   mutate(across(2:602, ~ . - df_prop_virus[[cur_column()]]))
+# df_prop_subtracted <- df_prop_hg %>% 
+#   mutate(across(2:602, ~ abs(. - df_prop_virus[[cur_column()]])))
+
+##############
+# find longest frag per row
+##############
+find_last_nonzero_column <- function(row) {
+  # Get the index of the last non-zero value
+  last_nonzero_index <- max(which(row > 0.0000001))
+  
+  # If there are no non-zero values, return NA
+  if (length(last_nonzero_index) == 0) {
+    return(NA)
+  } else {
+    # Return the column name
+    return(names(row)[last_nonzero_index])
+  }
+}
+
+# Apply the function to each row
+result <- apply(df_prop_hg[, 50:600], 1, find_last_nonzero_column)
+hist(as.numeric(result))
+shortest_common_max <- names(sort(table(as.numeric(result)), decreasing = TRUE))[1] # 265 for virus, 364 human
+
+result <- apply(df_prop_virus[, 50:600], 1, find_last_nonzero_column)
+hist(as.numeric(result))
+shortest_common_max <- names(sort(table(as.numeric(result)), decreasing = TRUE))[1] # 265 for virus, 364 human
+
+################
+# re-calculate the proportion accordingly 
+################
+
+df_prop_virus <- df_virus_frag %>%
+  # Calculate the sum of columns 3 through 603
+  mutate(total_sum = rowSums(.[, 53:306])) %>%
+  #filter(virus == "HPV16Aligned") %>% 
+  dplyr::select(filename, everything()) %>%
+  left_join(dplyr::select(df_OPC, filename, timepoint), by = "filename") %>% 
+  filter((timepoint == "Baseline" | is.na(timepoint)) & READ_PAIRS > 1000) %>%  #POSSIBLY CHANGE
+  # Divide each column by the respective total_sum
+  mutate(across(53:268, ~ . / total_sum)) %>% 
+  dplyr::select(filename,53:268) %>%
+  arrange(filename)
+
+df_prop_hg <- df_hg_frag %>%
+  mutate(total_sum = rowSums(.[, 53:367])) %>%
+  dplyr::select(filename, everything()) %>%
+  left_join(dplyr::select(df_OPC, filename, timepoint), by = "filename") %>% 
+  filter((timepoint == "Baseline" | is.na(timepoint)) & READ_PAIRS > 1000) %>% 
+  # Divide each column by the respective total_sum
+  mutate(across(53:367, ~ . / total_sum)) %>% 
+  dplyr::select(filename,53:367) %>%
+  # filter(filename %in% df_prop_virus$filename) %>%
+  arrange(filename)
+
+
+
+
+```
+
+## Visualize Fragment length distributions
+
+```{r}
+ggthemr::ggthemr_reset()
+
+
+##################
+# virus reads
+##################
+maxmima_vals = df_prop_virus[order(df_prop_virus$`175`), ][1, ]$filename
+
+
+df_fraglength_prop_long <- df_prop_virus %>%
+  # filter(str_detect(filename, "OPC_Pool-1_1_S1_L001")) %>%
+  pivot_longer(cols = -c(filename), names_to = "length", values_to = "proportion") %>%
+  mutate(length = as.numeric(length)) %>% 
+  filter(!is.na(proportion))
+
+
+#plot all sample fragment length proportions
+ggplot(df_fraglength_prop_long, aes(x = length, y = proportion, group = filename, color = filename)) + 
+  geom_line(alpha = 0.7) +
+  labs(x = "Length", y = "Proportion") +
+  theme_minimal() + theme(legend.position = "none") +
+  xlim(0,300) + ggtitle("Fragment Length Distribution of Virus-Only Reads") 
+
+##################
+# summary stats
+
+df_summary <- df_fraglength_prop_long %>%
+  group_by(length) %>%
+  summarise(
+    median_proportion = median(proportion),
+    #mean_proportion = mean(proportion),
+    sd_proportion = sd(proportion)
+  )
+
+ggplot(df_summary, aes(x = length, y = median_proportion)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = median_proportion - sd_proportion, ymax = median_proportion + sd_proportion), alpha = 0.2) +
+  labs(x = "Length", y = "Proportion", title = "Proportion by Length with Standard Deviation") +
+  theme_minimal()
+
+
+##################
+# human reads
+##################
+outlier_x = df_prop_hg[which.max(df_prop_hg$`130`),1] 
+minima_vals = df_prop_hg[order(df_prop_hg$`175`), ][1:3, ]$filename
+# 
+# summary_minima = df_clinical %>% 
+#   # filter(filename %in% minima_vals) %>% 
+#   summarize(stage_t_ajcc8 = stage_t_ajcc8,
+#             stage_n_ajcc8 = stage_n_ajcc8,
+#             stage_ajcc8 = stage_ajcc8,
+#             sum_gtv_nodes.x = sum_gtv_nodes,
+#             gtv_primary = gtv_primary)
+# 
+
+df_fraglength_prop_long <- df_prop_hg %>% 
+  pivot_longer(cols = -c(filename), names_to = "length", values_to = "proportion") %>%
+  mutate(length = as.numeric(length))
+
+#plot all sample fragment length proportions
+ggplot(df_fraglength_prop_long, aes(x = length, y = proportion, group = filename, color = filename)) + 
+  geom_line(alpha = 0.7) +
+  labs(x = "Length", y = "Proportion") +
+  theme_minimal() + theme(legend.position = "none") + 
+  xlim(0,300) + ggtitle("Fragment Length Distribution of Human-Only Reads")
+
+
+##################
+# summary stats
+
+df_summary <- df_fraglength_prop_long %>%
+  group_by(length) %>%
+  summarise(
+    # median_proportion = median(proportion),
+    mean_proportion = mean(proportion),
+    sd_proportion = sd(proportion)
+  )
+
+ggplot(df_summary, aes(x = length, y = mean_proportion)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = mean_proportion - sd_proportion, ymax = mean_proportion + sd_proportion), alpha = 0.2) +
+  labs(x = "Length", y = "Proportion", title = "Proportion by Length with Standard Deviation") +
+  theme_minimal()
+
+
+
+##################
+# human reads (HEALTHY ONLY)
+##################
+
+
+df_fraglength_prop_long <- df_prop_hg %>% 
+  filter(str_detect(df_prop_hg$filename, "HUCON")) %>%
+  pivot_longer(cols = -c(filename), names_to = "length", values_to = "proportion") %>%
+  mutate(length = as.numeric(length))
+
+#plot all sample fragment length proportions
+ggplot(df_fraglength_prop_long, aes(x = length, y = proportion, group = filename, color = filename)) + 
+  geom_line(alpha = 0.7) +
+  labs(x = "Length", y = "Proportion") +
+  theme_minimal() + theme(legend.position = "none") + 
+  xlim(0,300) + ggtitle("Fragment Length Distribution of Human-Only Reads")
+
+
+##################
+# summary stats
+
+df_summary <- df_fraglength_prop_long %>%
+  group_by(length) %>%
+  summarise(
+    # median_proportion = median(proportion),
+    mean_proportion = mean(proportion),
+    sd_proportion = sd(proportion)
+  )
+
+ggplot(df_summary, aes(x = length, y = mean_proportion)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = mean_proportion - sd_proportion, ymax = mean_proportion + sd_proportion), alpha = 0.2) +
+  labs(x = "Length", y = "Proportion", title = "Proportion by Length with Standard Deviation") +
+  theme_minimal()
+```
+
+### Further virus analysis
+
+```{r}
+##################
+# virus reads
+##################
+maxmima_vals = df_prop_virus[order(df_prop_virus$`175`), ][1, ]$filename
+
+# x = (df_OPC %>% dplyr::filter(!is.na(IntegrationHigh)) %>% dplyr::select(filename)) #change to what  want
+# x = (df_OPC %>% dplyr::filter(IntegrationHigh>10) %>% dplyr::select(filename)) #change to what filter I
+x = (df_clinical %>% dplyr::filter(stage_n_ajcc8 == "N2") %>% dplyr::select(filename))
+df_fraglength_prop_long <- df_prop_virus %>%
+  filter(filename %in% x$filename) %>%
+  pivot_longer(cols = -c(filename), names_to = "length", values_to = "proportion") %>%
+  mutate(length = as.numeric(length)) %>% 
+  filter(!is.na(proportion))
+
+
+#plot all sample fragment length proportions
+ggplot(df_fraglength_prop_long, aes(x = length, y = proportion, group = filename, color = filename)) + 
+  geom_line(alpha = 0.7) +
+  labs(x = "Length", y = "Proportion") +
+  theme_minimal() + theme(legend.position = "none") +
+  xlim(0,300) + ggtitle("Fragment Length Distribution of Virus-Only Reads")
+
+##################
+# summary stats
+
+df_summary <- df_fraglength_prop_long %>%
+  group_by(length) %>%
+  summarise(
+    # median_proportion = median(proportion),
+    mean_proportion = mean(proportion),
+    sd_proportion = sd(proportion)
+  )
+
+ggplot(df_summary, aes(x = length, y = mean_proportion)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = mean_proportion - sd_proportion, ymax = mean_proportion + sd_proportion), alpha = 0.2) +
+  labs(x = "Length", y = "Proportion", title = "N3 Proportion by Length with Standard Deviation") +
+  theme_minimal()
+```
+
+## Create NMF Graphs
+
+```{r}
+
+df_clinical = fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/clinical_data.tsv")
+
+df_clinical = df_clinical %>% 
+  mutate(Patient_ID = patient)
+
+###############
+# Create Matrix for NMF
+###############
+m_all_insertsize_extended =t(as.matrix(df_prop_virus[, -1])) #df_prop_hg
+colnames(m_all_insertsize_extended) = (df_prop_virus$filename)
+
+columns_without_NaN <- colSums(is.nan(m_all_insertsize_extended)) == 0
+
+# Subset m_all_insertsize_extended to keep only those columns
+m_all_insertsize_extended <- m_all_insertsize_extended[, columns_without_NaN]
+
+
+# m_all_insertsize_extended =t(as.matrix(df_prop_hg[, -1])) #df_prop_hg
+# colnames(m_all_insertsize_extended) = (df_prop_hg$filename)
+
+###############
+# Create df for NMF analysis 
+###############
+
+df_samples <- df_OPC %>%
+  left_join(df_clinical,by = "Patient_ID") %>% 
+  dplyr::select(library = filename, 
+                sample = stage_n_ajcc8, 
+                patient = Patient_ID) %>%
+  # filter(sample == "N2" | str_detect(library, "HUCON")) %>%
+  mutate(cohort = "OPC",
+         timepoint = "Baseline")
+
+nmf_insertsize <- nmf(
+  m_all_insertsize_extended,
+  rank = 2
+)
+
+plotdata_nmf_basis <- basis(nmf_insertsize) %>%
+  as_tibble(rownames = 'fragment_length') %>%
+  gather(component, basis, -fragment_length) %>%
+  mutate(fragment_length = as.integer(fragment_length)) %>%
+  group_by(component) %>%
+  mutate(
+    proportion = basis / sum(basis),
+    component_mean = sum(fragment_length * proportion)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    signature = if_else(component_mean == min(component_mean), 'cancer', 'normal')
+  ) %>%
+  ungroup() %>%
+  dplyr::select(-component_mean)
+
+plotdata_nmf_weights <- coef(nmf_insertsize) %>%
+  t() %>%
+  as_tibble(rownames = 'library') %>%
+  gather(component, value, -library) %>%
+  left_join(plotdata_nmf_basis %>% distinct(component, signature)) %>%
+  dplyr::select(-component) %>%
+  spread(signature, value) %>%
+  right_join(df_samples) %>% #change back to left join 
+  mutate(
+  sample_type = sample,
+  sample_type = factor(sample_type, levels = c("N0", "N1", "N2", "N3", NA))) %>%
+  # sample_type = factor(sample_type, levels = c("T1", "T2", "T3","T4", NA))) %>%
+  dplyr::select(library, sample_type, cancer, normal) %>%
+  arrange(sample_type, cancer) %>%
+  mutate(
+    library = factor(
+      library,
+      levels = unique(library)
+    )
+  ) %>%
+  gather(component, weight, -library, -sample_type) %>%
+  group_by(library) %>%
+  mutate(weight = weight / sum(weight)) %>%
+  ungroup()
+
+p_heatmap_nmf_weights <- plotdata_nmf_weights %>%
+  ggplot(aes(
+    x = component,
+    y = library,
+    fill = weight
+  )) +
+  geom_tile() +
+  scale_fill_viridis() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+
+p_colorbar_nmf_weights <- plotdata_nmf_weights %>%
+  ggplot(aes(
+    x = 0,
+    y = library,
+    fill = sample_type
+  )) +
+  geom_tile() +
+  scale_fill_brewer(palette = 'Set1') +
+  theme_void()
+
+p_nmf_weights_beeswarm <- plotdata_nmf_weights %>%
+  filter(component == 'cancer') %>%
+  ggplot(aes(
+    x = sample_type,
+    y = weight
+  )) +
+  geom_beeswarm(color = 'black', size = 0.5) +
+  labs(
+    x = 'Sample Type',
+    y = 'NMF Cancer\nComponent Weight'
+  )
+
+# plotdata_nmf_immunescore <- plotdata_nmf_weights %>%
+#   inner_join(
+#     bind_rows(
+#       df_csm,
+#       df_csm_normalcontrol
+#     ),
+#     by = 'library'
+#   )
+# 
+# p_nmf_csm_correlation <- plotdata_nmf_immunescore %>%
+#   filter(immune_group == 'Non-immune') %>%
+#   ggplot(aes(
+#     x = weight,
+#     y = score,
+#     color = component
+#   )) +
+#   facet_grid(component ~ .) +
+#   geom_point() +
+#   scale_y_log10() +
+#   labs(
+#     x = 'NMF component weight',
+#     y = 'CSM'
+#   )
+
+plotdata_nmf_cancer_likelihood <- plotdata_nmf_basis %>%
+  left_join(
+    plotdata_nmf_basis %>%
+      group_by(component) %>%
+      summarise(mean_fl = sum(fragment_length * proportion)) %>%
+      mutate(component_name = if_else(mean_fl == min(mean_fl), 'Cancer', 'Normal'))
+  ) %>%
+  dplyr::select(component_name, fragment_length, proportion) %>%
+  spread(component_name, proportion) %>%
+  mutate(cancer_likelihood = Cancer / (Cancer + Normal))
+
+p_nmf_basis <- plotdata_nmf_cancer_likelihood %>%
+  gather(group, value, -fragment_length, -cancer_likelihood) %>%
+  ggplot(aes(
+    x = fragment_length,
+    y = value,
+    color = group,
+    group = group
+  )) +
+  geom_line() +
+  labs(
+    x = 'Fragment Length',
+    y = 'Basis value',
+    color = 'NMF component'
+  )
+
+p_nmf_basis_likelihood <- plotdata_nmf_cancer_likelihood %>%
+  distinct(fragment_length, cancer_likelihood) %>%
+  ggplot(aes(
+    x = fragment_length,
+    y = cancer_likelihood
+  )) +
+  geom_line()
+
+
+plot(p_heatmap_nmf_weights)
+
+plot(p_colorbar_nmf_weights)
+plot(p_nmf_weights_beeswarm)
+plot(p_nmf_basis)
+plot(p_nmf_basis_likelihood)
+
+
+```
+
+-   take all the frags in a sample and map to the cancer likelihood, and then you can sum that up and see how cancer
+
+### Curious about swapping the cancer and non-cancer info
+
+```{r}
+plotdata_nmf_cancer_likelihood <- plotdata_nmf_basis %>%
+  left_join(
+    plotdata_nmf_basis %>%
+      group_by(component) %>%
+      summarise(mean_fl = sum(fragment_length * proportion)) %>%
+      mutate(component_name = if_else(mean_fl == min(mean_fl), 'Cancer', 'Normal'))
+  ) %>%
+  dplyr::select(component_name, fragment_length, proportion) %>%
+  spread(component_name, proportion) %>%
+  mutate(cancer_likelihood = Normal / (Cancer + Normal))
+
+p_nmf_basis <- plotdata_nmf_cancer_likelihood %>%
+  gather(group, value, -fragment_length, -cancer_likelihood) %>%
+  ggplot(aes(
+    x = fragment_length,
+    y = value,
+    color = group,
+    group = group
+  )) +
+  geom_line() +
+  labs(
+    x = 'Fragment Length',
+    y = 'Basis value',
+    color = 'NMF component'
+  )
+
+p_nmf_basis_likelihood <- plotdata_nmf_cancer_likelihood %>%
+  distinct(fragment_length, cancer_likelihood) %>%
+  ggplot(aes(
+    x = fragment_length,
+    y = cancer_likelihood
+  )) +
+  geom_line()
+
+
+plot(p_heatmap_nmf_weights)
+
+plot(p_colorbar_nmf_weights)
+plot(p_nmf_weights_beeswarm)
+plot(p_nmf_basis)
+plot(p_nmf_basis_likelihood)
+```
+
+## Compare the fragment score that we talked about in lab meeting
+
+Althaf mentioned multiplying the likelihood by the given patient matrix.
+
+-   I tried for both virus and human ( just need to change the line for m_all_insert_size variable above and run to below to get the result. It doesn't appear that there are any significant differences of note here for human. Very unfortunate.
+-   Can maybe try for the healthy vs normal signature though next.
+
+```{r}
+
+df_likelihood_filter = plotdata_nmf_cancer_likelihood %>% 
+  filter(cancer_likelihood >0.66)
+
+df_fraglength_prop_long <- df_prop_virus %>% pivot_longer(cols = -c(filename), 
+                                                       names_to = "fragment_length", 
+                                                       values_to = "proportion") %>%
+  mutate(fragment_length = as.integer(fragment_length)) %>% 
+  left_join(df_likelihood_filter,by = c("fragment_length"))
+
+
+df_fraglength_prop_long$product <- df_fraglength_prop_long$proportion * df_fraglength_prop_long$cancer_likelihood
+
+df_summary_likelihood <- df_fraglength_prop_long %>%
+  group_by(filename) %>%
+  summarise(total_product = sum(product, na.rm = TRUE)) %>% 
+  right_join(df_OPC, by = "filename") %>% 
+  left_join(df_clinical, by =c("Patient_ID")) %>% 
+  left_join(df_gtv_primary,by="patient") %>% 
+  left_join(df_gtv_nodes,by="patient") 
+
+
+x_var = df_summary_likelihood$total_product
+y_var = df_summary_likelihood$sum_gtv_nodes #gtv_primary #
+# x_var = log(df_summary_likelihood$seq_copies_mL_corrected1.67+1)
+p_scatter_weights_integration <- df_summary_likelihood %>%
+  ggplot(aes(
+    x = x_var, #log(seq_copies_mL_corrected1.67+1)
+    y = y_var,
+  )) +
+  geom_point() # +  scale_fill_viridis() 
+
+plot(p_scatter_weights_integration)
+
+
+lm_seq_product = lm(y_var ~ x_var, data=df_summary_likelihood)
+
+summary(lm_seq_product)
+
+cor.test(x_var, y_var, method="pearson")
+```
+
+## Check Fragment length (90-150bp) prop and association
+
+```{r}
+# Apply the function to each row
+# result <- apply(df_prop_virus[, 50:600], 1, find_last_nonzero_column)
+# hist(as.numeric(result))
+# shortest_common_max <- names(sort(table(as.numeric(result)), decreasing = TRUE))[1] # 265 for virus, 364 human
+
+```
+
+## Compare NMF weight with integration confidence
+
+You could also use the NMF weights matrix to see whether cases with a higher weight from the shorter viral fragment length profile are also more likely to have high confidence integration events
+
+-   plot out the fragment length profiles instead of just filtering out right away
+
+```{r}
+
+df_weights_OPC <- df_OPC %>%
+  left_join(plotdata_nmf_weights, by = c("filename" = "library")) %>%
+  filter(component == "cancer" & weight > 0.7)
+
+df_weights_clinical <- df_clinical %>%
+  left_join(df_weights_OPC, by = c("Patient_ID")) %>%
+  filter(component == "cancer" & weight > 0.7) %>% 
+  left_join(df_gtv_nodes, by = c("patient"))
+
+df_fragpropvirus_integration <- df_prop_virus %>% 
+  mutate(total_sum = rowSums(.[, 160:170]),
+         total_sum2 = rowSums(.[, 130:140]),
+         propval = log(total_sum)/log(total_sum2)) %>%
+  select(filename,propval) %>% 
+  left_join(df_OPC %>% dplyr::select(filename,Integration_score)) %>% 
+  left_join(df_clinical %>% dplyr::select(filename,stage_n_ajcc8)) 
+  
+p_scatter_weights_integration <- df_weights_clinical %>%
+  ggplot(aes(
+    x = weight,
+    y = sum_gtv_nodes
+  )) +
+  geom_point() +  scale_fill_viridis() 
+
+p_scatter_weights_integration <- df_fragpropvirus_integration %>%
+  ggplot(aes(
+    x = propval,
+    y = Integration_score
+  )) +
+  geom_point() +  scale_fill_viridis() 
+p_scatter_weights_integration
+
+plot(p_scatter_weights_integration)
+```
+
+## Random
+
+```{r}
+
+```

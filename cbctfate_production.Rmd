@@ -1,0 +1,589 @@
+---
+title: "CBCT-FATE Production Testing"
+author: "Eric Zhao"
+date: "2023-05-10"
+output:
+  rmdformats::readthedown:
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: false
+    highlight: tango
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  results = FALSE,
+  dev=c('png', 'pdf', 'svg'),
+  fig.path='figures/cbct/'
+)
+
+library(viridis)
+library(umap)
+library(zoo)
+library(survival)
+library(survminer)
+library(lubridate)
+library(gtsummary)
+library(GGally)
+library(ggdendro)
+library(cowplot)
+library(ggthemr)
+library(ggbeeswarm)
+library(ggsignif)
+library(tidyverse)
+library(forestmodel)
+library(RColorBrewer)
+library(pander)
+library(numDeriv)
+library(yaml)
+library(dbscan)
+library(scales)
+library(ggrepel)
+library(patchwork)
+
+
+panderOptions('round', 3)
+panderOptions('table.style', 'rmarkdown')
+
+ggthemr(
+  palette = 'pale',
+  layout = 'minimal',
+)
+
+load('data/results/data_cbct_fate_paper.Rdata')
+
+shared_theme <- theme(
+  axis.text.x = element_text(angle = 45, hjust = 1)
+)
+
+source('src/summary_functions.R')
+
+df_clinical <- read_csv(
+    'data/clinical/npc_ebv_paper/Anth-SVB-NPC pull-Feb 9, 2023.csv',
+    col_types = cols(
+      rt_start = col_date('%m-%d-%Y'),
+      rt_end = col_date('%m-%d-%Y'),
+      date_local_recurrence = col_date('%m-%d-%Y'),
+      date_regional_recurrence = col_date('%m-%d-%Y'),
+      date_distant_recurrence = col_date('%m-%d-%Y'),
+      date_last_fu = col_date('%m-%d-%Y')
+    )
+  ) %>%
+  dplyr::rename(Mrn = mrn) %>%
+  mutate(
+    Mrn = as.integer(Mrn),
+    local_recurrence = if_else(local_recurrence == 'Yes', TRUE, FALSE, FALSE),
+    regional_recurrence = if_else(regional_recurrence == 'Yes', TRUE, FALSE, FALSE),
+    distant_recurrence = if_else(distant_recurrence == 'Yes', TRUE, FALSE, FALSE),
+    recurrence = local_recurrence | regional_recurrence | distant_recurrence,
+    date_recurrence = pmin(date_local_recurrence, date_regional_recurrence, date_distant_recurrence, na.rm=T),
+    time_to_local_recurrence = as.integer(if_else(local_recurrence, date_local_recurrence - rt_start, date_last_fu - rt_start) / 30),
+    time_to_recurrence = as.integer(if_else(recurrence, date_recurrence - rt_start, date_last_fu - rt_start) / 30)
+  )
+
+key_roi = c('x_Air_GTVp_Expanded05', 'x_Air_GTVp_Expanded05_FixedThresh', 'x_GTVp_Tracking')
+```
+
+```{r, eval=F}
+array_full_table_labels <- list(
+      sex ~ 'Sex',
+      age ~ 'Age at diagnosis',
+      ecog ~ 'ECOG Status',
+      stage_t_ajcc7 ~ 'T stage',
+      stage_n_ajcc7 ~ 'N stage',
+      stage_ajcc7 ~ 'Overall stage (AJCC7)',
+      smoking_hx ~ 'Smoking status',
+      smoking_py ~ 'Smoking packyears',
+      drinking_hx ~ 'Drinking history',
+      npc_type ~ 'NPC type',
+      eber ~ 'EBER status',
+      chemo_sequence ~ 'Chemotherapy',
+      rt_intent ~ 'Regimen'
+    )
+
+df_clinical %>%
+  inner_join(df_cbctfate_npc %>% select(Mrn, cohort) %>% distinct) %>%
+  tbl_summary(
+    by = 'cohort',
+    include = sapply(array_full_table_labels, function(z) {as.character(z)[2]}),
+    label = array_full_table_labels
+  )
+```
+
+# The CBCT-FATE pipeline 
+
+In this document, we perform statistical analysis on results generated from MIRA pipeline on CBCT data.
+
+![](/Users/ezhao/Documents/Obsidian/Work and Life/Daily Notes/Overview of CBCT-FATE Processing.svg)
+
+
+```{r, fig.width = 10, fig.height = 10}
+df_cbctfate_npc_raw_discovery <- read_csv(
+  'data/cbctfate/2023-07-14 NPC CBCTFATE Validation.csv',
+  col_types = cols(
+      ExamDate = col_datetime('%m/%d/%Y %H:%M:%S')
+    )
+  ) %>%
+  mutate(
+    Mrn = as.integer(Mrn)
+  )
+
+df_cbctfate_npc_raw_validation <- read_csv(
+    'data/cbctfate/2023 Oct 27 - HN NPC FATE - Validation - RS Import Success-geometries.csv',
+    col_types = cols(
+      ExamDate = col_datetime('%m/%d/%Y %H:%M:%S')
+    )
+  ) %>%
+  mutate(
+    Mrn = as.integer(Mrn)
+  )
+
+df_cbctfate_opc <- read_csv(
+    'data/cbctfate/2023-07-24 HN OPC FATE Validation.csv',
+    col_types = cols(
+      ExamDate = col_datetime('%m/%d/%Y %H:%M:%S')
+    )
+  ) %>%
+  mutate(
+    Mrn = as.integer(Mrn)
+  )
+
+df_cbctfate_raw_0 <- df_cbctfate_npc_raw_discovery %>%
+  filter(! Mrn %in% df_cbctfate_npc_raw_validation$Mrn) %>%
+  bind_rows(df_cbctfate_npc_raw_validation) %>%
+  bind_rows(df_cbctfate_opc) %>%
+  distinct() %>%
+  mutate(
+    cohort = case_when(
+      Mrn %in% df_cbctfate_npc_raw_discovery$Mrn ~ 'NPC Discovery',
+      Mrn %in% df_cbctfate_npc_raw_validation$Mrn ~ 'NPC Validation',
+      Mrn %in% df_cbctfate_opc$Mrn ~ 'OPC'
+    ),
+    series_index = gsub('.*?_.*?_(.*?)_.*', '\\1', ExamName),
+    target = gsub('.*?_<(.*?)>', '\\1', Roi),
+    Roi = gsub('(.*?)_<.*', '\\1', Roi)
+  )
+
+df_cbctfate_raw_1 <- df_cbctfate_raw_0 %>%
+  filter(startsWith(ExamName, 'CBCT'), Roi %in% key_roi)
+
+df_excluded <- df_cbctfate_raw_0 %>% distinct(Mrn) %>% filter(! Mrn %in% df_cbctfate_raw_1$Mrn) %>% mutate(reason='No CBCT data')
+
+df_cbctfate_raw_5 <- df_cbctfate_raw_1 %>%
+  filter(!is.na(Volume)) %>%
+  group_by(Mrn) %>%
+  filter(length(unique(as.Date(ExamDate))) > 20) %>%
+  ungroup()
+
+df_excluded <- df_excluded %>% bind_rows(df_cbctfate_raw_1 %>% distinct(Mrn) %>% filter(! Mrn %in% df_cbctfate_raw_5$Mrn) %>% mutate(reason="< 20 Fractions"))
+
+df_cbctfate_raw_6 <- df_cbctfate_raw_5 %>%
+  filter(!is.na(Volume)) %>%
+  group_by(Mrn) %>%
+  filter(length(unique(as.Date(ExamDate))) < 45, max(ExamFraction) < 45) %>%
+  ungroup()
+
+df_excluded <- df_excluded %>% bind_rows(df_cbctfate_raw_5 %>% distinct(Mrn) %>% filter(! Mrn %in% df_cbctfate_raw_6$Mrn) %>% mutate(reason="> 45 Fractions (retreat?)"))
+
+df_cbctfate_raw_7 <- df_cbctfate_raw_6 %>%
+  group_by(Mrn, Roi) %>%
+  arrange(Mrn, Roi, ExamDate) %>%
+  mutate(
+    next_scan = c(ExamDate[2:n()], NA),
+    time_to_next_scan = difftime(next_scan, ExamDate, units = 'days')
+  ) %>%
+  filter(max(time_to_next_scan, na.rm=T) < 14 | min(time_to_next_scan, na.rm=T) < 0) %>%
+  ungroup()
+
+df_excluded <- df_excluded %>% bind_rows(df_cbctfate_raw_6 %>% distinct(Mrn) %>% filter(! Mrn %in% df_cbctfate_raw_7$Mrn) %>% mutate(reason="Discordant CBCT dates"))
+
+
+```
+
+```{r, fig.height = 20, fig.width = 20}
+df_cbctfate_raw_8 <- df_cbctfate_raw_7 %>%
+  group_by(Mrn, Roi, series_index) %>%
+  mutate(
+    smooth_spline = lowess(ExamFraction, Volume)$y
+  ) %>%
+  ungroup() %>%
+  group_by(Mrn, Roi) %>%
+  arrange(Mrn, Roi, ExamDate) %>%
+  mutate(fraction = row_number()) %>%
+  ungroup()
+```
+
+```{r, fig.width = 20, fig.height = 10}
+df_cbctfate_multiplan_adjustments <- df_cbctfate_raw_8 %>%
+  group_by(Mrn, Roi, series_index) %>%
+  summarise(
+    series_start = min(ExamDate),
+    n_cbct = n(),
+    mean_volume = mean(Volume),
+    smooth_start = mean(smooth_spline[1:min(n(),3)]),
+    smooth_end = mean(smooth_spline[max(1,n()-3):n()])
+  ) %>%
+  ungroup() %>%
+  group_by(Roi, Mrn) %>%
+  arrange(Roi, Mrn) %>%
+  filter(n() > 1) %>%
+  mutate(
+    prev_smooth_end = c(NA, smooth_end[1:(n()-1)]),
+    prev_mean_volume = c(NA, mean_volume[1:(n()-1)]),
+    prev_n_cbct = c(NA, n_cbct[1:(n()-1)])
+  ) %>%
+  filter(!is.na(prev_smooth_end)) %>%
+  ungroup() %>%
+  mutate(
+    prev_value = if_else(prev_n_cbct >= 8, prev_smooth_end, prev_mean_volume),
+    current_value = if_else(n_cbct >= 8, smooth_start, mean_volume),
+    adjustment = prev_value - current_value
+  )
+
+df_cbctfate_raw_9 <- df_cbctfate_raw_8 %>%
+  left_join(
+    df_cbctfate_multiplan_adjustments %>%
+      select(Mrn, Roi, series_index, adjustment)
+  ) %>%
+  replace_na(list(adjustment = 0)) %>%
+  group_by(Mrn, Roi) %>%
+  mutate(
+    volume_adjust = Volume + adjustment,
+    smooth_spline_adjust = lowess(fraction, volume_adjust)$y,
+  ) %>%
+  ungroup()
+
+lapply(
+  key_roi,
+  function(chosen_roi) {
+    p_unadjusted <- df_cbctfate_raw_9 %>%
+      filter(Roi == chosen_roi) %>%
+      filter(Mrn %in% df_cbctfate_multiplan_adjustments$Mrn) %>%
+      ggplot(aes(
+        x = fraction,
+        color = series_index
+      )) +
+      geom_point(aes(
+        y = Volume
+      ), size = 0.2, alpha = 0.5) +
+      geom_line(aes(
+        y = smooth_spline,
+        group = series_index
+      )) +
+      facet_wrap(~Mrn, scales='free') +
+      ggtitle(sprintf('%s - Cases with replan, unadjusted', chosen_roi)) +
+      scale_color_brewer(palette = 'Set1')
+    
+    p_adjusted <- df_cbctfate_raw_9 %>%
+      filter(Roi == chosen_roi) %>%
+      filter(Mrn %in% df_cbctfate_multiplan_adjustments$Mrn) %>%
+      ggplot(aes(
+        x = fraction,
+        color = series_index
+      )) +
+      geom_point(aes(
+        y = volume_adjust
+      ), size = 0.2, alpha = 0.5) +
+      geom_line(aes(
+        y = smooth_spline_adjust,
+      )) +
+      facet_wrap(~Mrn, scales='free') +
+      ggtitle(sprintf('%s - Cases with replan, adjusted', chosen_roi)) +
+      scale_color_brewer(palette = 'Set1')
+    
+    
+    return(plot_grid(
+      p_unadjusted,
+      p_adjusted
+    ))
+  }
+)
+```
+
+
+
+```{r}
+df_cbctfate_raw_10 <- df_cbctfate_raw_9 %>%
+  group_by(Mrn) %>%
+  filter(max(fraction) > 30) %>%
+  ungroup() %>%
+  select(-Volume, -ExamFraction, -smooth_spline) %>%
+  rename(
+    smooth_spline = smooth_spline_adjust,
+    Volume = volume_adjust
+  ) %>%
+  mutate(
+    cluster = cbind(fraction, Volume) %>%
+      dbscan(minPts = 10, eps = 15) %>%
+      .$cluster %>% as.factor,
+    outlier = cluster == 0,
+    fraction_standardized = fraction * 35 / max(fraction),
+    slope_prenorm = grad(
+      function(x) {
+        return(smooth.spline(x = fraction_standardized, y = Volume, df=5) %>% predict(x) %>% .$y)
+      },
+      x = fraction
+    ),
+    residual = Volume - smooth_spline,
+    sd_band = 3 * sd(residual),
+    outlier = outlier | (abs(residual) > (3 * sd(residual)))
+  ) %>%
+  ungroup() %>%
+  filter(Roi %in% key_roi)
+
+
+df_excluded <- df_excluded %>% bind_rows(df_cbctfate_raw_9 %>% distinct(Mrn) %>% filter(! Mrn %in% df_cbctfate_raw_10$Mrn) %>% mutate(reason="< 30 fractions"))
+
+df_cbctfate_raw <- df_cbctfate_raw_10
+
+```
+
+Double-checking the courses to make sure no redundancies.
+
+```{r}
+df_cbctfate_raw %>%
+  count(Mrn, fraction, Roi) %>%
+  {stopifnot(max(.$n) == 1)}
+```
+
+
+
+## Outlier Detection by Smoothing Spline
+
+We fit a smoothing spline with the `lowess` function. We compute the standard deviation of residuals and label as outliers any points falling greater than 2 standard deviations above or below the spline. This is illustrated below.
+
+```{r outlier_detection_smoothing_spline, fig.width = 10, fig.height = 10}
+df_cbctfate_raw_10 %>%
+  group_by(Mrn) %>%
+  filter(any(outlier)) %>%
+  ungroup() %>%
+  plyr::dlply('Roi', function(z) {
+    z %>%
+      ggplot(aes(
+        x = fraction
+      )) +
+      geom_ribbon(aes(
+        y = smooth_spline,
+        ymin = smooth_spline - sd_band,
+        ymax = smooth_spline + sd_band
+      ), fill = 'Grey90', color = NA) +
+      geom_line(aes(y = smooth_spline)) +
+      geom_point(aes(
+        y = Volume,
+        color = outlier
+      )) +
+      scale_color_brewer(palette = 'Set1') +
+      facet_wrap(~Mrn, scales='free') +
+      ggtitle(z$Roi %>% unique)
+  })
+
+df_cbctfate_raw <- df_cbctfate_raw_10 %>%
+  group_by(Mrn, Roi) %>%
+  summarise(n_outliers = sum(outlier)) %>%
+  ungroup() %>%
+  spread(Roi, n_outliers) %>%
+  filter(x_Air_GTVp_Expanded05 < 5) %>%
+  distinct(Mrn) %>%
+  left_join(df_cbctfate_raw_10)
+
+df_excluded <- df_excluded %>% bind_rows(df_cbctfate_raw_10 %>% distinct(Mrn) %>% filter(! Mrn %in% df_cbctfate_raw$Mrn) %>% mutate(reason="> 5 outliers"))
+```
+
+
+Reasons for exclusion
+
+```{r}
+df_excluded %>%
+  left_join(df_cbctfate_raw_0 %>% distinct(Mrn, cohort)) %>%
+  distinct %>%
+  count(cohort, reason) %>%
+  spread(cohort, n) %>%
+  replace_na(list('NPC Validation' = 0, 'OPC' = 0))
+```
+
+
+## Fit Smoothing Spline
+
+With outliers removed, we then fit the final smoothing spline that actually represents the FATE-CBCT score.
+
+```{r, fig.width = 20, fig.height = 20}
+
+# Obtain GTVp from CT scans
+df_ct <- df_cbctfate %>%
+  group_by(Mrn) %>%
+  filter(fraction == min(fraction)) %>%
+  ungroup() %>%
+  distinct(Mrn, first_cbct_date = ExamDate) %>%
+  left_join(
+    df_cbctfate_raw_0 %>%
+      filter(startsWith(ExamName, 'CT_'), Roi == 'x_GTVp_Tracking') %>% 
+      distinct(Mrn, ct_date = ExamDate, gtv_primary = Volume)
+  ) %>%
+  filter(ct_date < first_cbct_date) %>%
+  mutate(interval = first_cbct_date - ct_date)
+
+df_cbctfate <- df_cbctfate_raw %>%
+  filter(Roi %in% key_roi) %>%
+  filter(!outlier) %>%
+  left_join(df_ct %>% select(Mrn, gtv_primary)) %>%
+  group_by(Mrn, Roi) %>%
+  arrange(Mrn, Roi, fraction) %>%
+  mutate(
+    air_volume_proportion = Volume / gtv_primary,
+    smoothed = lowess(x = fraction, y = Volume, f = 0.5)$y,
+    smoothed_normalized = (smoothed - smoothed[1]) / (gtv_primary),
+    normalized = (Volume - smoothed[1]) / (gtv_primary),
+    normalized_percent = normalized * 100,
+    percent_vol = smoothed_normalized * 100,
+    slope = slope_prenorm / gtv_primary * 100
+  ) %>%
+  ungroup()
+
+df_cbctfate_smooth <- df_cbctfate %>%
+  left_join(df_ct %>% select(Mrn, gtv_primary)) %>%
+  group_by(Mrn, cohort, gtv_primary, Roi) %>%
+  arrange(Mrn, fraction) %>%
+  mutate(
+    fraction_standardized = fraction * 35 / max(fraction),
+    air_volume_proportion = Volume / gtv_primary 
+  ) %>%
+  summarise(
+    fraction = 0:35,
+    smoothed = smooth.spline(x = fraction_standardized, y = Volume, df=5) %>% predict(fraction) %>% .$y,
+    slope_prenorm = grad(
+      function(x) {
+        return(smooth.spline(x = fraction_standardized, y = Volume, df=5) %>% predict(x) %>% .$y)
+      },
+      x = 0:35
+    )
+  ) %>%
+  mutate(
+    smoothed_normalized = (smoothed - smoothed[fraction == 0]) / (gtv_primary),
+    percent_vol = smoothed_normalized * 100,
+    slope = slope_prenorm / gtv_primary * 100
+  ) %>%
+  ungroup()
+
+df_cbctfate %>%
+  plyr::dlply('Roi', function(z) {
+    z %>%
+      ggplot(aes(
+        x = fraction,
+        y = Volume
+      )) +
+      geom_point() +
+      scale_color_brewer(palette = 'Set1') +
+      facet_wrap(~Mrn, scales='free') +
+      geom_line(
+        aes(
+          y = smoothed
+        ),
+        color = 'black',
+        size = 1.5
+      ) +
+      ggtitle(z$Roi %>% unique)
+  })
+
+df_cbctfate_raw %>% count(Roi)
+  
+```
+
+Calculation based on fractional air in the expanded volume.
+
+```{r, fig.width = 10, fig.height = 10}
+df_cbctfate_smooth %>%
+  ggplot(aes(
+    x = fraction,
+    y = slope,
+    group = Mrn
+  )) +
+  geom_line() +
+  facet_grid(cohort~Roi, scales = 'free')
+
+df_cbctfate %>%
+  ggplot(aes(
+    x = fraction,
+    y = percent_vol,
+    group = Mrn
+  )) +
+  geom_line() +
+  facet_grid(cohort~Roi, scales = 'free')
+```
+
+The values are then scaled to represent a fraction of the initial GTV and translated to start at zero.
+
+## Calculation of AUC
+
+We compute the AUC of each trajectory. They are summarized in histograms below. Note that all X axes here are different, as the various metrics lie on different scales.
+
+```{r, fig.width = 8, fig.height = 8}
+df_cbctfate_auc <- df_cbctfate_smooth %>%
+  group_by(Mrn, cohort, Roi) %>%
+  arrange(Mrn, fraction) %>%
+  mutate(
+    previous_fraction = c(fraction[1], fraction[1:(n()-1)]),
+    width = fraction - previous_fraction,
+    previous_volume = c(percent_vol[1], percent_vol[1:(n()-1)]) / 100,
+    area = (percent_vol/100 + previous_volume)/2 * width
+  ) %>%
+  summarise(auc = sum(area)) %>%
+  ungroup() %>%
+  group_by(cohort, Roi) %>%
+  mutate(auc_group = if_else(auc > median(auc), 'Above median', 'Below median')) %>%
+  ungroup()
+
+df_cbctfate_auc %>%
+  ggplot(aes(
+    x = cohort,
+    y = auc
+  )) +
+  facet_wrap(~Roi, ncol = 1, scales = 'free') +
+  geom_beeswarm()
+```
+
+
+## Cross-correlation of AUC values
+
+Below figure shows pairwise scatter plots between each pair of metrics.
+We see a strong correlation between the fixed and variable threshold to identify air volume.
+There is a rough negative cohort between GTVp tracking and air volume.
+
+```{r, fig.width = 10, fig.height = 8}
+df_cbctfate_auc %>%
+  select(Mrn, Roi, auc) %>%
+  spread(Roi, auc) %>%
+  ggpairs() +
+  theme_grey()
+```
+
+## Systematic bias by date of treatment?
+
+```{r}
+df_cbctfate_auc %>%
+  left_join(df_clinical) %>%
+  ggplot(aes(
+    x = rt_start,
+    y = auc,
+    color = recurrence
+  )) +
+  geom_point() +
+  facet_wrap(~Roi) +
+  scale_color_brewer(palette = 'Set1')
+```
+
+```{r}
+save(
+  df_cbctfate,
+  df_cbctfate_smooth,
+  df_cbctfate_auc,
+  file = 'data/results/cbctfate_scores.Rdata'
+)
+
+```
+
+

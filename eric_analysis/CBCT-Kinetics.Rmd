@@ -1,0 +1,2911 @@
+---
+title: "Head & Neck Noninvasive Biomarker Kinetics"
+author: "Eric Zhao"
+date: "28/01/2022"
+output:
+  rmdformats::readthedown:
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: false
+    highlight: tango
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, dev=c('png', 'pdf', 'svg'), fig.path='figures/cbct/')
+library(viridis)
+library(umap)
+library(zoo)
+library(survival)
+library(survminer)
+library(lubridate)
+library(gtsummary)
+library(GGally)
+library(ggdendro)
+library(cowplot)
+library(ggthemr)
+library(ggbeeswarm)
+library(ggsignif)
+library(tidyverse)
+library(forestmodel)
+library(RColorBrewer)
+library(pander)
+library(numDeriv)
+library(yaml)
+library(dbscan)
+library(scales)
+library(ggrepel)
+library(patchwork)
+
+
+panderOptions('round', 3)
+panderOptions('table.style', 'rmarkdown')
+
+ggthemr(
+  palette = 'pale',
+  layout = 'minimal',
+)
+
+load('data/results/data_cbct_fate_paper.Rdata')
+
+shared_theme <- theme(
+  axis.text.x = element_text(angle = 45, hjust = 1)
+)
+
+source('src/summary_functions.R')
+```
+
+
+
+```{r load_data, eval=F}
+df_clinical <- read_csv(
+    "data/clinical/For Bratman-40 NPC Clinical Info-Jan 28' 2022.csv",
+    col_types = cols(
+      rt_start = col_date(format = '%m-%d-%Y'),
+      rt_end = col_date(format = '%m-%d-%Y'),
+      date_local_failure = col_date(format = '%m-%d-%Y'),
+      date_regional_failure = col_date(format = '%m-%d-%Y'),
+      date_distant_failure = col_date(format = '%m-%d-%Y'),
+      last_followup = col_date(format = '%m-%d-%Y')
+    )
+  ) %>%
+  filter(
+    ! grepl('palliative', tx_intent)
+  ) %>%
+  mutate(
+    patient = sprintf("NPC%02d", row_number()),
+    date_earliest_failure = suppressWarnings(parse_date(apply(., 1, function(z) {min(z['date_local_failure'], z['date_regional_failure'], z['date_distant_failure'], na.rm=T)}))),
+    time_to_earliest_failure = as.numeric(date_earliest_failure - rt_start) / 30,
+    failure = !is.na(time_to_earliest_failure),
+    time_to_earliest_failure = if_else(failure, time_to_earliest_failure, as.numeric(last_followup - rt_start) / 30)
+  ) %>%
+  select(patient, mrn, everything()) %>%
+  mutate(
+    chemo = if_else(chemo == 'Yes', TRUE, FALSE, FALSE),
+    ecog = factor(gsub('ECOG ', '', ecog), levels = c('0', '1')),
+    smoking_hx = factor(smoking_hx, levels = c('Non-smoker', 'Ex-smoker', 'Current', 'unknown')),
+    drinking_hx = factor(tolower(drinking_hx), levels = c('non-drinker', 'ex-drinker', 'light', 'moderate', 'heavy', 'unknown')),
+    local_failure = if_else(local_failure == 'Yes', TRUE, FALSE, FALSE),
+    regional_failure = if_else(regional_failure == 'Yes', TRUE, FALSE, FALSE),
+    distant_failure = if_else(distant_failure == 'Yes', TRUE, FALSE, FALSE),
+    preRT_ebv = case_when(
+      preRT_ebv == 'Undetectable' ~ 0,
+      TRUE ~ as.numeric(gsub('\n', '', preRT_ebv))
+    ),
+    postRT_ebv = case_when(
+      postRT_ebv == 'Undetectable' ~ 0,
+      postRT_ebv == 'Not tested' ~ as.numeric(NA),
+      TRUE ~ as.numeric(gsub('\n', '', postRT_ebv))
+    ),
+    gender = factor(gender),
+    stage_ajcc7 = factor(stage_ajcc7),
+    primary_pathology = factor(primary_pathology),
+    hpv_status = factor(hpv_status),
+    t_stage_ajcc7 = gsub('(T\\d).*', '\\1', t_stage_ajcc7) %>% factor(levels = c('T1', 'T2', 'T3', 'T4')),
+    n_stage_ajcc7 = gsub('(N\\d).*', '\\1', n_stage_ajcc7) %>% factor(levels = c('N0', 'N1', 'N2', 'N3'))
+  ) %>%
+  mutate(
+    date_local_failure_or_last_followup = if_else(local_failure, date_local_failure, last_followup),
+    time_to_local_failure = as.numeric(date_local_failure_or_last_followup - rt_start) / 30,
+    date_regional_failure_or_last_followup = if_else(regional_failure, date_regional_failure, last_followup),
+    time_to_regional_failure = as.numeric(date_regional_failure_or_last_followup - rt_start) / 30,
+    date_distant_failure_or_last_followup = if_else(distant_failure, date_distant_failure, last_followup),
+    time_to_distant_failure = as.numeric(date_distant_failure_or_last_followup - rt_start) / 30,
+    locoregional_failure = local_failure | regional_failure,
+    date_locoregional_failure = pmin(date_local_failure, date_regional_failure, na.rm = TRUE),
+    time_to_locoregional_failure = if_else(is.na(date_locoregional_failure), as.numeric(last_followup - rt_start)/30, as.numeric(date_locoregional_failure - rt_start)/30)
+  )
+
+df_airvolume <- read_csv('data/clinical/HNTumorKineticGeometric-Vol_air-450-in-GTV+5mm_2017-02-11.csv') %>%
+  filter(mrn %in% df_clinical$mrn) %>%
+  select(-patient) %>%
+  left_join(distinct(df_clinical %>% distinct(patient, mrn))) %>%
+  select(-mrn) %>%
+  select(patient, everything()) %>%
+  gather(fraction, air_volume, -patient) %>%
+  mutate(
+    fraction = as.integer(fraction)
+  ) %>%
+  group_by(patient) %>%
+  arrange(patient, fraction) %>%
+  filter(!is.na(air_volume)) %>%
+  ungroup()
+  #mutate(air_volume = na.approx(air_volume, na.rm = F))
+
+# Full EBV results from AMDL, pulled by Ian King
+df_ebv <- read_csv('data/clinical/npc_ebv_full.csv') %>%
+  mutate(mrn = as.double(mrn)) %>%
+  inner_join(df_clinical %>% distinct(mrn, patient))
+
+save(
+  df_clinical,
+  df_ebv,
+  df_airvolume,
+  file = 'data/results/data_cbct_fate_paper.Rdata'
+)
+```
+
+# Analysis of CBCT Kinetics
+
+In this analysis, we explore the data from a cohort of 39 nasopharynx
+patients whose daily CBCT scans during radical RT were analyzed for evidence of
+tumor being replaced with air.
+
+The data for this analysis comes from a prior data analysis. Later, we
+have performed new analysis to validate this one.
+
+**Click on the figures to expand them**.
+
+## Clinical Cohort Description
+
+We begin by describing the baseline clinical characteristics of this cohort.
+
+Clinical demographics of chemotherapy and non-chemotherapy treated
+patients.
+
+```{r clinical_table_chemo_demographics}
+gtsummary_clinical <- df_clinical %>%
+  filter(! grepl('palliative', tx_intent)) %>%
+  mutate(
+    chemo = if_else(chemo, 'Chemotherapy', 'No Chemotherapy')
+  ) %>%
+  tbl_summary(
+    by = 'chemo',
+    include = c(
+      'age', 
+      'gender',
+      'ecog', 
+      'smoking_hx',
+      'drinking_hx',
+      'stage_ajcc7',
+      'primary_pathology',
+      'hpv_status',
+      'tx_intent',
+      'chemo',
+      'fractions',
+      'dose'
+    ),
+    label = list(
+      age ~ 'Age',
+      gender ~ 'Sex',
+      ecog ~ 'ECOG Status',
+      smoking_hx ~ 'Smoking History',
+      drinking_hx ~ 'Drinking History',
+      stage_ajcc7 ~ 'Stage (AJCC7)',
+      primary_pathology ~ 'Histologic Diagnosis',
+      hpv_status ~ 'HPV Status',
+      tx_intent ~ 'Treatment Intent/Regimen',
+      chemo ~ 'Concurrent Chemotherapy',
+      fractions ~ 'Number of Fractions',
+      dose ~ 'Dose delivered'
+    ),
+  )
+
+gtsummary_clinical
+```
+
+
+### Outcomes
+
+Acronyms:
+- Primary outcome: RFS (Recurrence-free survival)
+- Secondary outcomes:
+  - LRRFS (locoregional recurrencefree survival)
+  - DMFS (distant metastasis-free survival)
+
+```{r survival_single_arm, fig.width = 12, fig.height = 4}
+plot_all_failure <- df_clinical %>%
+  surv_fit(Surv(time_to_earliest_failure, failure) ~ 1, data = .) %>%
+  ggsurvplot(color = 'black') +
+  labs(
+    x = 'Time (months)',
+    y = 'RFS'
+  )
+
+plot_locoregional_failure <- df_clinical %>%
+  surv_fit(Surv(time_to_locoregional_failure, locoregional_failure) ~ 1, data = .) %>%
+  ggsurvplot(color = 'black') +
+  labs(
+    x = 'Time (months)',
+    y = 'LRRFS'
+  )
+
+plot_distant_failure <- df_clinical %>%
+  surv_fit(Surv(time_to_distant_failure, distant_failure) ~ 1, data = .) %>%
+  ggsurvplot(color = 'black', ) +
+  labs(
+    x = 'Time (months)',
+    y = 'DMFS'
+  )
+
+plot_grid(
+  plot_all_failure$plot + theme(legend.position = 'none'),
+  plot_locoregional_failure$plot + theme(legend.position = 'none'),
+  plot_distant_failure$plot + theme(legend.position = 'none'),
+  nrow = 1
+)
+
+df_clinical %>%
+  filter(!grepl('palliative', tx_intent)) %>%
+  mutate(
+    time_to_followup = as.numeric(last_followup - rt_start) / 30
+  ) %>%
+  summarise_at(
+    colnames(.)[startsWith(colnames(.), 'time_to_')],
+    .funs = c('xmedian'=median, 'xmin'=min, 'xmax'=max)
+  ) %>%
+  gather(metric, value) %>%
+  separate(metric, c('outcome', 'metric'), sep='_x') %>%
+  spread(metric, value) %>%
+  pander()
+
+df_clinical %>%
+  filter(!grepl('palliative', tx_intent)) %>%
+  mutate(
+    time_to_followup = as.numeric(last_followup - rt_start) / 30
+  ) %>%
+  summarise(
+    median_followup = median(time_to_followup[is.na(death_date)]),
+    min_followup = min(time_to_followup[is.na(death_date)]),
+    max_followup = max(time_to_followup[is.na(death_date)])
+  ) %>%
+  pander()
+```
+
+Overall, there are not many events in the data, with only
+`r sum(df_clinical$failure)` out of `r nrow(df_clinical)`
+patients (`r round(sum(df_clinical$failure) / nrow(df_clinical) * 100)`%)
+experiencing eventual progression of any kind. Overall, we are underpowered
+to detect any significant changes, but the purpose of this cohort
+is more exploratory and to identify potential clinical correlates among
+CBCT air volume trajectories.
+
+### Baseline and post-treatment EBV ctDNA levels
+
+```{r clinical_ebv, fig.width = 8, fig.height = 4}
+plotdf_ebv <- df_ebv %>%
+  left_join(df_clinical) %>%
+  mutate(
+    timing_with_treatment = case_when(
+      ebv_date <= rt_start ~ 'pre-treatment',
+      ebv_date > rt_end ~ 'post-treatment',
+      TRUE ~ 'on-treatment'
+    ) %>% factor(levels = c('pre-treatment', 'on-treatment', 'post-treatment'))
+  ) %>%
+  group_by(patient, timing_with_treatment) %>%
+  filter(!is.na(ebv_actual)) %>%
+  filter(
+    (timing_with_treatment == 'pre-treatment' & ebv_date == max(ebv_date)) |
+    (timing_with_treatment == 'post-treatment' & ebv_date == min(ebv_date)) |
+    (timing_with_treatment == 'on-treatment')
+  ) %>%
+  ungroup() %>%
+  distinct(patient, timing_with_treatment, ebv_actual, ebv_date)
+
+plot_ebv_timepoints <- plotdf_ebv %>%
+  ggplot(aes(
+    x = timing_with_treatment,
+    y = ebv_actual,
+    group = patient
+  )) +
+  geom_line() +
+  geom_point() +
+  scale_y_log10() +
+  labs(
+    x = 'Timing',
+    y = 'EBV titer'
+  )
+
+plot_ebv_timing_relative_to_rt <- df_clinical %>%
+  distinct(patient, rt_start, rt_end) %>%
+  mutate(
+    rt_duration = rt_end - rt_start
+  ) %>%
+  ggplot(aes(
+    y = patient
+  )) +
+  geom_segment(aes(
+    x = 0,
+    xend = rt_duration,
+    yend = patient
+  )) +
+  geom_point(aes(
+      x = ebv_date_relative_to_rt_start
+    ),
+    data = plotdf_ebv %>%
+      left_join(df_clinical) %>%
+      mutate(ebv_date_relative_to_rt_start = ebv_date - rt_start)
+  ) +
+  labs(
+    x = 'Time (days relative to RT start)',
+    y = 'Patient'
+  ) +
+  xlim(-25, 250)
+
+plot_grid(
+  plot_ebv_timepoints,
+  plot_ebv_timing_relative_to_rt
+)
+```
+
+First, we see that nearly all patients had undetectable post-RT EBV.
+There is a wide range of pre-RT EBV levels.
+
+
+### GTV and baseline EBV are prognostic
+
+Here, RFS stands for "failure free survival" and an event is any failure,
+local, regional, or distant.
+
+```{r baseline_ebv_vs_volume, fig.width = 10, fig.height = 6}
+plot_locoregional_failure_ebv <- df_clinical %>%
+  mutate(baseline_ebv = if_else(preRT_ebv > median(preRT_ebv), 'Above Median', 'Below Median')) %>%
+  surv_fit(Surv(time_to_locoregional_failure, locoregional_failure) ~ baseline_ebv, data = .) %>%
+  ggsurvplot(pval = TRUE) +
+  labs(
+    x = 'Time (months)',
+    y = 'LRRFS'
+  )
+
+plot_distant_failure_ebv <- df_clinical %>%
+  mutate(baseline_ebv = if_else(preRT_ebv > median(preRT_ebv), 'Above Median', 'Below Median')) %>%
+  surv_fit(Surv(time_to_distant_failure, distant_failure) ~ baseline_ebv, data = .) %>%
+  ggsurvplot(pval = TRUE) +
+  labs(
+    x = 'Time (months)',
+    y = 'DMFS'
+  )
+
+plot_earliest_failure_ebv <- df_clinical %>%
+  mutate(baseline_ebv = if_else(preRT_ebv > median(preRT_ebv), 'Above Median', 'Below Median')) %>%
+  surv_fit(Surv(time_to_earliest_failure, failure) ~ baseline_ebv, data = .) %>%
+  ggsurvplot(pval = TRUE) +
+  labs(
+    x = 'Time (months)',
+    y = 'RFS'
+  )
+
+plot_locoregional_failure_gtv <- df_clinical %>%
+  mutate(gtv = if_else(gtv_primary > median(gtv_primary), 'Above Median', 'Below Median')) %>%
+  surv_fit(Surv(time_to_locoregional_failure, locoregional_failure) ~ gtv, data = .) %>%
+  ggsurvplot(pval = TRUE) +
+  labs(
+    x = 'Time (months)',
+    y = 'LRRFS'
+  )
+
+plot_distant_failure_gtv <- df_clinical %>%
+  mutate(gtv = if_else(gtv_primary > median(gtv_primary), 'Above Median', 'Below Median')) %>%
+  surv_fit(Surv(time_to_distant_failure, distant_failure) ~ gtv, data = .) %>%
+  ggsurvplot(pval = TRUE) +
+  labs(
+    x = 'Time (months)',
+    y = 'DMFS'
+  )
+
+plot_earliest_failure_gtv <- df_clinical %>%
+  mutate(gtv = if_else(gtv_primary > median(gtv_primary), 'Above Median', 'Below Median')) %>%
+  surv_fit(Surv(time_to_earliest_failure, failure) ~ gtv, data = .) %>%
+  ggsurvplot(pval = TRUE) +
+  labs(
+    x = 'Time (months)',
+    y = 'RFS'
+  )
+
+plot_grid(
+  NULL, get_legend(plot_earliest_failure_ebv$plot), NULL,
+  plot_locoregional_failure_ebv$plot + theme(legend.position = 'none'),
+  plot_distant_failure_ebv$plot + theme(legend.position = 'none'),
+  plot_earliest_failure_ebv$plot + theme(legend.position = 'none'),
+  NULL, get_legend(plot_earliest_failure_gtv$plot), NULL,
+  plot_locoregional_failure_gtv$plot + theme(legend.position = 'none'),
+  plot_distant_failure_gtv$plot + theme(legend.position = 'none'),
+  plot_earliest_failure_gtv$plot + theme(legend.position = 'none'),
+  ncol = 3,
+  labels = c('By baseline EBV', '', '', '', '', '', 'By GTV', '', ''),
+  rel_heights = c(1,5,1,5),
+  label_x = 0.2,
+  hjust = 0
+)
+```
+
+Both baseline GTV size and baseline EBV levels seem to be prognostic
+variables. The analysis is of course under-powered to detect statistically
+significant differences, and the p values below are not adjusted for
+multiple hypothesis testing.
+
+
+## Air volume kinetics analysis
+
+Measurements were obtained by rigid registration against planning CTs.
+GTVp was expanded uniformly by 5 mm and propagated to daily CBCTs.
+Voxel-wise HU thresholding was performed to estimate the volume of air
+within the expanded GTVp.
+
+Here, we first smooth the air volume by using a smoothing spline, with
+5 degrees of freedom. Missing values are trivially interpolated by the
+spline. Next, the smoothed values are normalized with the formula
+
+x[norm] = (x - x[baseline]) / GTVp.
+
+The resulting normalized fit curves are plotted here as a line,
+showing the non-smoothed individual fraction datapoints,
+also normalized using the above formula so that the effect of the 
+smoothing method can be seen.
+
+The slope of the curves can also be computed by computing the finite
+difference derivative of the smoothing spline, and then calculating
+the slope at each fraction.
+
+
+```{r air_volume_analysis, fig.height = 8, fig.width = 10}
+# Previous smoothing definition
+# smoothing_window_width = 7
+# smoothed = sapply(
+#       1:n(),
+#       function(i) {
+#         mean(air_volume[
+#           max(0, (i-smoothing_window_width), na.rm=T) :
+#           (i+smoothing_window_width)
+#         ], na.rm = T)
+#       })
+
+smoothing_window_width = 7
+df_airvolume_processed <- df_airvolume %>%
+  left_join(df_clinical) %>%
+  group_by(patient) %>%
+  arrange(patient, fraction) %>%
+  mutate(
+    air_volume_proportion = air_volume / gtv_primary,
+    smoothed = smooth.spline(x = fraction, y = air_volume, df=5) %>% predict(fraction) %>% .$y,
+    smoothed_normalized = (smoothed - smoothed[fraction == 0]) / (gtv_primary),
+    normalized = (air_volume - smoothed[fraction == 0]) / (gtv_primary),
+    normalized_percent = normalized * 100,
+    percent_vol = smoothed_normalized * 100,
+    fraction_standardized = fraction * 35 / max(fraction)
+  ) %>%
+  ungroup()
+
+
+df_airvolume_smooth <- df_airvolume %>%
+  left_join(df_clinical) %>%
+  group_by(patient, gtv_primary) %>%
+  arrange(patient, fraction) %>%
+  mutate(
+    fraction_standardized = fraction * 35 / max(fraction),
+    air_volume_proportion = air_volume / gtv_primary
+  ) %>%
+  summarise(
+    fraction = 0:35,
+    smoothed = smooth.spline(x = fraction_standardized, y = air_volume, df=5) %>% predict(fraction) %>% .$y,
+    slope_prenorm = grad(
+      function(x) {
+        return(smooth.spline(x = fraction_standardized, y = air_volume, df=5) %>% predict(x) %>% .$y)
+      },
+      x = 0:35
+    )
+  ) %>%
+  mutate(
+    smoothed_normalized = (smoothed - smoothed[fraction == 0]) / (gtv_primary),
+    percent_vol = smoothed_normalized * 100,
+    slope = slope_prenorm / gtv_primary * 100
+  ) %>%
+  ungroup()
+
+df_airvolume_auc <- df_airvolume_processed %>%
+  group_by(mrn, patient) %>%
+  arrange(mrn, patient, fraction) %>%
+  mutate(percent_vol = if_else(percent_vol < 0, 0, percent_vol)) %>%
+  mutate(
+    previous_fraction = c(fraction[1], fraction[1:(n()-1)]),
+    width = fraction - previous_fraction,
+    previous_volume = c(percent_vol[1], percent_vol[1:(n()-1)]) / 100,
+    area = (percent_vol/100 + previous_volume)/2 * width
+  ) %>%
+  summarise(
+    auc = sum(area)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    auc_group = if_else(auc > median(auc), 'Above median', 'Below median')
+  )
+
+df_airvolume_processed %>%
+  ggplot(aes(
+    x = fraction,
+    group = patient,
+    y = normalized_percent
+  )) +
+  geom_point(color='grey80') +
+  geom_line(aes(y = percent_vol), size=1.5) +
+  facet_wrap(~ patient, scales='free_y') +
+  labs(y = 'Air Volume (Normalized Percentage of GTVp)', x = 'RT Fraction')
+
+
+df_airvolume_smooth %>%
+  left_join(df_clinical %>% select(mrn, patient)) %>%
+  ggplot(aes(
+    x = fraction,
+    y = slope
+  )) +
+  geom_line() +
+  facet_wrap(~patient, scales = 'free')
+```
+
+Smoothing appears quite effective at approximating the trend of the data.
+
+
+### Trace AUC
+
+We can compute AUC from the smoothed curves. Note that missing data are interpolated, and cases with fewer than 35 Fx are normalized by a factor of 35/f, where f is the number of fractions delivered.
+
+```{r air_volume_auc, fig.height = 8, fig.width = 10}
+df_airvolume_processed %>%
+  left_join(df_airvolume_auc) %>%
+  mutate(patient = fct_reorder(patient, auc, .desc = T)) %>%
+  ggplot(aes(
+    x = fraction,
+    group = patient,
+    y = normalized_percent
+  )) +
+  geom_point(color='grey80') +
+  geom_line(aes(y = percent_vol), size=2) +
+  facet_wrap(~ patient, scales='free_y') +
+  labs(y = 'Air Volume (Normalized Percentage of GTVp)', x = 'RT Fraction') +
+  geom_text(
+    aes(
+      x = 0,
+      y = max_value * 1.1,
+      label = sprintf('AUC = %s', round(auc, 3))
+    ),
+    data = df_airvolume_processed %>%
+      left_join(df_airvolume_auc) %>%
+      group_by(patient) %>%
+      summarise(
+        auc = unique(auc),
+        max_value = max(normalized_percent, na.rm=T)
+      ) %>%
+      ungroup(),
+    hjust = 0
+  ) +
+  geom_point(
+    aes(
+      x = 0,
+      y = max_value * 1.2
+    ),
+    data = df_airvolume_processed %>%
+      left_join(df_airvolume_auc) %>%
+      group_by(patient) %>%
+      summarise(
+        auc = unique(auc),
+        max_value = max(normalized_percent, na.rm=T)
+      ) %>%
+      ungroup(),
+    shape = NA
+  )
+```
+
+
+### Recurrence Differences by AUC
+
+We hypothesized that higher AUC would be associated with favourable RFS.
+
+Below, we explore survival differences splitting instead on AUC (above
+vs. below median). We also undertook multivariate analyses. With few events,
+it's clear that we are underpowered, but there is a persistent trend
+of AUC towards being an independent predictor, so it is certainly promising.
+
+```{r cbct_cluster_survival_by_auc, fig.height = 6, fig.width = 8}
+shared_theme <- theme(
+  axis.text.x = element_text(angle = 45, hjust = 1)
+)
+
+plot_auc_histogram <- df_airvolume_auc %>%
+  ggplot(aes(
+    x = auc,
+    fill = auc_group
+  )) +
+  geom_histogram() +
+  geom_vline(
+    xintercept = median(df_airvolume_auc$auc),
+    color = 'black'
+  ) +
+  annotate(
+    'text',
+    x = median(df_airvolume_auc$auc) + 0.1,
+    y = 3.5,
+    label = sprintf('Median AUC: %s', round(median(df_airvolume_auc$auc), 2)),
+    color = 'black',
+    hjust = 0
+  ) +
+  labs(
+    x = 'AUC',
+    y = '# patients'
+  ) +
+  scale_fill_brewer(palette = 'Set1') +
+  theme(legend.position = 'none')
+
+plot_airvolume_traces <- df_airvolume_smooth %>%
+  left_join(df_airvolume_auc) %>%
+  ggplot(aes(
+    x = fraction,
+    y = percent_vol,
+    group = patient,
+    color = auc_group
+  )) +
+  geom_line() +
+  labs(
+    x = 'Radiotherapy Fraction',
+    y = 'Air Volume (% GTVp)',
+    color = 'AUC group'
+  ) +
+  scale_color_brewer(palette = 'Set1')
+
+plot_airvolume_to_auc <- df_airvolume_smooth %>%
+  left_join(df_airvolume_auc) %>%
+  group_by(patient) %>%
+  filter(fraction == max(fraction)) %>%
+  ungroup() %>%
+  ggplot(aes(
+    x = auc,
+    color = auc_group
+  )) +
+  geom_segment(aes(
+    x = 0,
+    xend = auc,
+    y = percent_vol,
+    yend = percent_vol
+  ), alpha = 0.3) +
+  geom_point(aes(
+    y = percent_vol,
+    group = patient
+  )) +
+  labs(
+    x = 'AUC',
+    y = 'Final air volume (% GTVp)'
+  ) +
+  ylim(0, max(df_airvolume_processed$percent_vol)) +
+  scale_color_brewer(palette = 'Set1') +
+  theme(
+    legend.position = 'none',
+    axis.text.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.line.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+
+fit_survival_all_by_auc <- survfit(
+    Surv(as.integer(time_to_earliest_failure), failure) ~ auc_group,
+    data = df_airvolume_auc %>% left_join(df_clinical)
+  )
+
+p_rfs_by_auc <- fit_survival_all_by_auc %>%
+  ggsurvplot(
+    pval = T,
+    legend.labs = c('Above median', 'Below median'),
+    risk.table = T,
+    palette = brewer.pal(n = 3, name='Set1')[1:2],
+    tables.y.text = FALSE,
+    conf.int = T,
+    conf.int.alpha = 0.15
+  )
+
+cox_auc_stage <- coxph(
+  Surv(as.numeric(time_to_earliest_failure), failure) ~ AUC + Stage,
+  data = df_airvolume_auc %>%
+    left_join(df_clinical) %>%
+    mutate(
+      Stage = case_when(
+        stage_ajcc7 %in% c('IVA', 'IVB') ~ 'IVA-IVB',
+        stage_ajcc7 %in% c('II', 'III') ~ 'II-III'
+      ) %>% factor(levels = c('II-III', 'IVA-IVB'))
+    ) %>%
+    dplyr::rename(AUC = auc_group)
+)
+
+cox_auc_chemo <- coxph(
+  Surv(as.numeric(time_to_earliest_failure), failure) ~ AUC + Stage,
+  data = df_airvolume_auc %>%
+    left_join(df_clinical) %>%
+    dplyr::rename(AUC = auc, `Concurrent chemotherapy` = chemo) %>%
+    mutate(Stage = as.numeric(stage_ajcc7))
+)
+
+p_forest_auc_cox <- forest_model(cox_auc_chemo, recalculate_width = dev.size()[2]* 0.8)
+
+p_auc <- plot_grid(
+  get_legend(plot_airvolume_to_auc + labs(color = 'AUC group')),
+  plot_auc_histogram + theme(legend.position = 'none'),
+  plot_airvolume_traces + theme(legend.position = 'none'),
+  plot_airvolume_to_auc + theme(
+    legend.position = 'none',
+    axis.text.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.line.y = element_blank(),
+    axis.ticks.y = element_blank()
+  ),
+  nrow = 2,
+  align = 'vh',
+  rel_heights = c(2,3),
+  rel_widths = c(1,1)
+)
+
+val_auc_shapiro_p <- signif(shapiro.test(df_airvolume_auc$auc)$p.value, 3)
+
+
+df_clinical$stage_ajcc7 %>% unique
+
+pw_rfs_by_auc <- (p_rfs_by_auc$plot + theme(legend.position = 'none') + labs(tag = 'C')) /
+  (p_rfs_by_auc$table + theme(
+      axis.title.y = element_blank(),
+      axis.line.y = element_blank(),
+      axis.text.x = element_blank(),
+      axis.line.x = element_blank(),
+      axis.ticks.x = element_blank(),
+    )) +
+  plot_layout(heights = c(5,1))
+
+((((plot_airvolume_traces + labs(tag='A')) / plot_auc_histogram + labs(tag='B')) | pw_rfs_by_auc) / p_forest_auc_cox + labs(tag='D')) +
+  plot_layout(
+    heights = c(3,1),
+    guides = 'collect'
+  )
+```
+
+```{r}
+
+```
+
+
+Showing the survival analysis when adjusting for T category and GTVp.
+
+```{r, fig.height = 6, fig.width = 8}
+cox_auc_t <- coxph(
+  Surv(as.numeric(time_to_earliest_failure), failure) ~ AUC + `T category`,
+  data = df_airvolume_auc %>%
+    left_join(df_clinical) %>%
+    mutate(
+      `T category` = as.numeric(t_stage_ajcc7)
+    ) %>%
+    dplyr::rename(AUC = auc)
+)
+
+cox_auc_gtvp <- coxph(
+  Surv(as.numeric(time_to_earliest_failure), failure) ~ AUC + GTVp,
+  data = df_airvolume_auc %>%
+    left_join(df_clinical) %>%
+    mutate(
+      GTVp = gtv_primary
+    ) %>%
+    dplyr::rename(AUC = auc)
+)
+
+cox_auc_loggtvp <- coxph(
+  Surv(as.numeric(time_to_earliest_failure), failure) ~ AUC + `log GTVp`,
+  data = df_airvolume_auc %>%
+    left_join(df_clinical) %>%
+    mutate(
+      `log GTVp` = log10(1 + gtv_primary)
+    ) %>%
+    dplyr::rename(AUC = auc)
+)
+
+cox_auc <- coxph(
+  Surv(as.numeric(time_to_earliest_failure), failure) ~ AUC,
+  data = df_airvolume_auc %>%
+    left_join(df_clinical) %>%
+    mutate(
+      `log GTVp` = log10(1 + gtv_primary)
+    ) %>%
+    dplyr::rename(AUC = auc)
+)
+
+plot_grid(
+  forest_model(cox_auc),
+  forest_model(cox_auc_t),
+  forest_model(cox_auc_gtvp),
+  forest_model(cox_auc_loggtvp),
+  ncol = 1
+)
+
+cox.zph(cox_auc)
+cox.zph(cox_auc_t)
+cox.zph(cox_auc_gtvp)
+cox.zph(cox_auc_loggtvp)
+
+df_airvolume_auc_nogtvcorrection <- df_airvolume_processed %>%
+  group_by(mrn, patient) %>%
+  mutate(smoothed_centered = smoothed - smoothed[fraction == 0]) %>%
+  arrange(mrn, patient, fraction) %>%
+  mutate(
+    previous_fraction = c(fraction[1], fraction[1:(n()-1)]),
+    width = fraction - previous_fraction,
+    previous_volume = c(smoothed_centered[1], smoothed_centered[1:(n()-1)]) / 100,
+    area = (smoothed_centered/100 + previous_volume)/2 * width
+  ) %>%
+  summarise(
+    auc = sum(area)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    auc_group = if_else(auc > median(auc), 'Above median', 'Below median')
+  )
+```
+
+```{r, fig.width = 10, fig.height = 5}
+df_airvolume_auc_nogtvcorrection %>%
+  left_join(df_clinical) %>%
+  with(cor.test(log10(auc), log10(gtv_primary)))
+
+df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  with(cor.test(auc, log10(gtv_primary)))
+
+plot_grid(
+  df_airvolume_auc_nogtvcorrection %>%
+    left_join(df_clinical) %>%
+    ggplot(aes(
+      x = auc,
+      y = gtv_primary
+    )) +
+    geom_point() +
+    scale_y_log10() +
+    scale_x_log10() +
+    geom_smooth(method = 'lm') +
+    ggtitle('GTVp vs. AUC - without normalizing by GTVp') +
+    labs(y = 'GTV primary', x = 'AUC'),
+  df_airvolume_auc %>%
+    left_join(df_clinical) %>%
+    ggplot(aes(
+      x = auc,
+      y = gtv_primary
+    )) +
+    geom_point() +
+    scale_y_log10() +
+    geom_smooth(method = 'lm') +
+    ggtitle('GTVp vs. AUC - after normalizing by GTVp') +
+    labs(y = 'GTV primary', x = 'AUC'),
+  nrow = 1
+)
+```
+
+
+**In the MVA (panel C), I am not sure which of the following models to report. I don't know whether it's too much to correct for stage and chemo simultaneously? All variables fulfill the proportional hazards assumption. Only AUC and stage are significant in UVA, but chemo could also be a confounder of AUC. That being said, so is smoking status, but we aren't planning to include that?**
+
+Induction chemo patient
+
+```{r induction_chemo_patient, fig.height = 6, fig.width = 6}
+p_ic_patient_curves <- df_airvolume_smooth %>%
+  ggplot(aes(
+    x = fraction,
+    y = percent_vol,
+    group = patient
+  )) +
+  geom_line() +
+  geom_line(
+    data = df_airvolume_smooth %>% inner_join(df_clinical) %>% filter(grepl('IC', tx_intent)),
+    size = 2,
+    color = brewer.pal(3, 'Set1')[2]
+  ) +
+  labs(
+    x = 'RT fraction',
+    y = 'FATE-CBCT\n(% GTVp)'
+  )
+
+p_ic_patient_smooth <- df_airvolume_processed %>%
+  inner_join(df_clinical) %>%
+  filter(grepl('IC', tx_intent)) %>%
+  ggplot(aes(
+    x = fraction
+  )) +
+  geom_point(
+    aes(
+      y = normalized_percent,
+    ),
+    color = 'grey70'
+  ) +
+  geom_line(
+    aes(
+      y = percent_vol
+    ),
+    size = 2,
+    color = brewer.pal(3, 'Set1')[2]
+  ) +
+  labs(
+    x = 'RT fraction',
+    y = 'FATE-CBCT\n(% GTVp)'
+  )
+
+cox_auc <- coxph(
+  Surv(as.numeric(time_to_earliest_failure), failure) ~ auc + Stage,
+  data = df_airvolume_auc %>%
+    left_join(df_clinical) %>%
+    mutate(
+      Stage = as.numeric(stage_ajcc7)
+    ) %>%
+    dplyr::rename(AUC = auc_group) %>%
+    mutate(AUC = factor(AUC, levels = c('Below median', 'Above median')))
+)
+
+cox_auc_sensitivity <- coxph(
+  Surv(as.numeric(time_to_earliest_failure), failure) ~ auc + Stage,
+  data = df_airvolume_auc %>%
+    left_join(df_clinical) %>%
+    filter(!grepl('IC', tx_intent)) %>%
+    mutate(
+      Stage = as.numeric(stage_ajcc7)
+    ) %>%
+    dplyr::rename(AUC = auc_group) %>%
+    mutate(AUC = factor(AUC, levels = c('Below median', 'Above median')))
+)
+
+plot_grid(
+  plot_grid(
+    p_ic_patient_smooth,
+    p_ic_patient_curves,
+    nrow = 1,
+    labels = c('A', 'B')
+  ),
+  (cox_auc %>%
+    forest_model() + ggtitle('All patients')) %>%
+    plot_grid(NA, ., rel_widths = c(1,20)),
+  (cox_auc_sensitivity %>%
+    forest_model() + ggtitle('Excluding IC')) %>%
+    plot_grid(NA, ., rel_widths = c(1,20)),
+  ncol = 1,
+  rel_heights = c(3,2,2),
+  labels = c('', 'C')
+)
+```
+
+
+```{r}
+coxph_auc_stage <- df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  mutate(stage = as.integer(stage_ajcc7)) %>%
+  coxph(
+    Surv(time_to_earliest_failure, failure) ~ auc + stage,
+    data = .
+  )
+
+coxph_auc_stage_chemo <- df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  mutate(stage = as.integer(stage_ajcc7)) %>%
+  coxph(
+    Surv(time_to_earliest_failure, failure) ~ auc + stage + chemo,
+    data = .
+  )
+
+forest_model(coxph_auc_stage)
+forest_model(coxph_auc_stage_chemo)
+
+cox.zph(coxph_auc_stage)$table %>%
+  as_tibble(rownames = 'parameter') %>%
+  pander()
+cox.zph(coxph_auc_stage_chemo)$table %>%
+  as_tibble(rownames = 'parameter') %>%
+  pander()
+```
+
+**Sensitivity analysis: removing the one case with induction chemo does not change the estimated HR. Zeynep: Is this appropriate as a sensitivity analysis?**
+
+
+```{r}
+df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  filter(tx_intent != 'radical-CRT (IC+CCRT)') %>%
+  mutate(stage = as.integer(stage_ajcc7)) %>%
+  coxph(
+    Surv(time_to_earliest_failure, failure) ~ auc + stage,
+    data = .
+  ) %>%
+  forest_model()
+
+df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  filter(tx_intent != 'radical-CRT (IC+CCRT)') %>%
+  mutate(stage = as.integer(stage_ajcc7)) %>%
+  coxph(
+    Surv(time_to_earliest_failure, failure) ~ auc + stage + chemo,
+    data = .
+  ) %>%
+  forest_model()
+```
+
+
+### Smoking is associated with poorer air volume recovery
+
+We see below that current smokers appear to have lower FATE-CBCT scores than ex-smokers or never-smokers. This can be verified by a Wilcoxon rank sum test of the AUC (excluding the 2 patients with unknown smoking status).
+
+Shapiro-wilk test shows that AUC is normally distributed (p = `r val_auc_shapiro_p`). However we can't know whether it's normally distributed within each subgroup we might be interested in looking at. Also, GTVp is not normally distributed, and the FATE-CBCT scores are normalized to GTVp, so there's rationale for them not being drawn from an underlying normal distribution.
+
+To sidestep issues, I have decided to proceed with Wilcoxon Rank-Sum tests for univariate comparisons.
+
+```{r cluster_traces_by_smoking_status, fig.width = 12, fig.height = 4}
+plot_airvolume_traces_bysmoking <- df_airvolume_processed %>%
+  ggplot(aes(
+    x = fraction,
+    y = percent_vol,
+    group = patient
+  )) +
+  geom_line(data = df_airvolume_processed %>% select(-smoking_hx), color = 'grey80') +
+  facet_wrap(~ smoking_hx) +
+  geom_line() +
+  scale_color_brewer(palette = 'Set1') +
+  labs(
+    x = 'Fraction',
+    y = 'Percent air in GTV'
+  )
+
+pd_airvolume_bysmoking_means <- df_airvolume_smooth %>%
+  left_join(df_clinical) %>%
+  filter(smoking_hx != 'unknown') %>%
+  group_by(smoking_hx, fraction) %>%
+  summarise(
+    fraction_mean = mean(percent_vol),
+    fraction_sd = sd(percent_vol),
+    confint = 1.96 * fraction_sd / sqrt(n())
+  ) %>%
+  ungroup()
+  
+plot_airvolume_bysmoking_means <- pd_airvolume_bysmoking_means %>%
+  ggplot(aes(
+    x = fraction,
+    y = fraction_mean,
+    ymin = fraction_mean - confint,
+    ymax = fraction_mean + confint,
+    color = smoking_hx,
+    fill = smoking_hx
+  )) +
+  geom_ribbon(alpha = 0.5, color = NA) +
+  geom_line() +
+  scale_color_brewer(palette = 'Set1') +
+  scale_fill_brewer(palette = 'Pastel1') +
+  labs(
+    color = '',
+    fill = '',
+    x = 'Fraction',
+    y = '% air in GTV'
+  ) +
+  geom_text_repel(
+    aes(label = smoking_hx),
+    data = pd_airvolume_bysmoking_means %>% filter(fraction == 30)
+  ) +
+  theme(legend.position = 'none')
+
+val_auc_by_smoking_py_correl <- df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  with(cor_test_string(smoking_py, auc, method = 'pearson'))
+
+plot_scatter_smoking_py_hx_auc <- df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  ggplot(aes(
+    x = smoking_py,
+    y = auc
+  )) +
+  geom_point(aes(
+    color = smoking_hx,
+    shape = smoking_hx
+  )) +
+  geom_smooth(method = 'lm') +
+  scale_color_brewer(palette = 'Set1') +
+  labs(
+    x = 'Pack-years',
+    y = 'AUC',
+    color = 'Smoking Status',
+    shape = 'Smoking Status'
+  ) +
+  annotate(
+    'text',
+    x = 60,
+    y = 13,
+    label = val_auc_by_smoking_py_correl %>% gsub('Pearson ', '', .) %>% gsub(',', '\n', .),
+    hjust = 1,
+    vjust = 1
+  )
+
+val_auc_by_smoking_p <- df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  mutate(current_smoker = smoking_hx == 'Current') %>%
+  with(wilcox.test(auc ~ current_smoker)) %>%
+  .$p.value %>%
+  pval_to_string
+
+p_auc_by_smoking <- df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  filter(smoking_hx != 'unknown') %>%
+  mutate(current_smoker = if_else(smoking_hx == 'Current', 'Yes', 'No')) %>%
+  ggplot(aes(
+    x = current_smoker,
+    y = auc
+  )) +
+  geom_violin(fill = 'grey90', color = NA) +
+  geom_boxplot(width = 0.2, fill = 'white') +
+  geom_beeswarm(aes(color = smoking_hx, shape = smoking_hx)) +
+  scale_color_brewer(palette = 'Set1') +
+  geom_signif(
+    comparisons = list(current_smorker = c('Yes', 'No')),
+    annotations = sprintf('%s', val_auc_by_smoking_p)
+  ) +
+  labs(
+    x = 'Current smoker',
+    y = 'AUC',
+    color = 'Smoking history',
+    shape = 'Smoking history'
+  )
+
+plot_grid(
+  plot_airvolume_traces_bysmoking,
+  plot_grid(
+    plot_airvolume_bysmoking_means,
+    plot_scatter_smoking_py_hx_auc,
+    ncol = 1,
+    align = 'vh'
+  ),
+  p_auc_by_smoking,
+  nrow = 1,
+  align = 'vh'
+)
+
+```
+
+
+Smokers tended to recover air volume more slowly, with the
+emphasis on current smokers. Non-smokers and ex-smokers had similar profiles.
+This supports the expected radiobiology of current smokers. 
+
+
+### Concurrent chemotherapy results in more rapid air volume growth
+
+```{r cluster_traces_by_chemo, fig.height = 4, fig.width = 12}
+plot_airvolume_bychemo_traces <- df_airvolume_processed %>%
+  mutate(
+    chemo = if_else(chemo, 'Chemo', 'No Chemo'),
+    percent_vol = smoothed_normalized * 100
+  ) %>%
+  ggplot(aes(
+    x = fraction,
+    y = percent_vol,
+    color = chemo,
+    group = patient
+  )) +
+  geom_line(data = df_airvolume_processed %>% select(- chemo), color = 'grey90') +
+  facet_wrap(~ chemo, nrow=1) +
+  geom_line() +
+  scale_color_brewer(palette = 'Set1') +
+  labs(
+    x = 'Fraction',
+    y = '% air in GTV'
+  )
+
+pd_airvolume_bychemo_means <- df_airvolume_smooth %>%
+  left_join(df_clinical) %>%
+  group_by(chemo, fraction) %>%
+  summarise(
+    fraction_mean = mean(percent_vol),
+    fraction_sd = sd(percent_vol),
+    confint = 1.96 * fraction_sd / sqrt(n())
+  ) %>%
+  mutate(chemo = if_else(chemo, 'Chemo', 'No Chemo')) %>%
+  ungroup()
+
+plot_airvolume_bychemo_means <- pd_airvolume_bychemo_means %>%
+  ggplot(aes(
+    x = fraction,
+    y = fraction_mean,
+    ymin = fraction_mean - confint,
+    ymax = fraction_mean + confint,
+    color = chemo,
+    fill = chemo
+  )) +
+  geom_ribbon(alpha = 0.5, color = NA) +
+  geom_line() +
+  scale_color_brewer(palette = 'Set1') +
+  scale_fill_brewer(palette = 'Pastel1') +
+  labs(
+    color = '',
+    fill = '',
+    x = 'Fraction',
+    y = '% air in GTV'
+  ) +
+  geom_text_repel(
+    aes(label = chemo),
+    data = pd_airvolume_bychemo_means %>% filter(fraction == 30)
+  ) +
+  theme(legend.position = 'none')
+
+val_auc_by_chemo_p <- with(
+  df_airvolume_auc %>% left_join(df_clinical),
+  wilcox.test(auc ~ chemo)
+)$p.value %>% pval_to_string()
+
+p_auc_by_chemo <- df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  mutate(tx_group = if_else(chemo, 'CRT', 'RT')) %>%
+  ggplot(aes(
+    x = tx_group,
+    y = auc,
+  )) +
+  geom_violin(fill = 'grey90', color = NA) +
+  geom_boxplot(width = 0.15, fill = 'white') +
+  geom_beeswarm(aes(color = tx_group)) +
+  geom_signif(
+    comparisons = list(tx_group = c('CRT', 'RT')),
+    annotations = val_auc_by_chemo_p
+  ) +
+  labs(
+    x = 'Treatment',
+    y = 'AUC'
+  ) +
+  scale_color_brewer(palette = 'Set1', guide=F)
+
+
+plot_grid(
+  plot_grid(
+    plot_airvolume_bychemo_traces + theme(legend.position = 'None'),
+    plot_airvolume_bychemo_means + theme(legend.position = 'None'),
+    get_legend(plot_airvolume_bychemo_traces + theme(legend.position = 'bottom')),
+    get_legend(plot_airvolume_bychemo_means + theme(legend.position = 'bottom')),
+    ncol = 2,
+    rel_widths = c(6,4),
+    rel_heights = c(8,1),
+    labels = c('A', 'B')
+  ),
+  p_auc_by_chemo,
+  nrow = 1,
+  rel_widths = c(3,2)
+)
+
+```
+
+Patients who underwent concurrent chemotherapy demonstrated more rapid
+growth of air in the GTV. This is evidenced in the averaged curves, plotted
+with 95% confidence intervals.
+
+Chemo and GTV primary size are confounded. Patients with larger tumors were
+more likely to receive chemoRT. We can estimate the effect of
+chemo on AUC by adjusting for GTV primary size.
+
+Ultimately, it's hard to conclude definitively with only 5 patients
+not receiving chemo, so this analysis needs to be validated.
+
+
+### CBCT trajectories are affected by T category
+
+T category and N category each seem to be major determinants of CBCT trajectory.
+The effect of N category may act through chemo. Adjusting for T category and chemo,
+both are significant predictors. Adjusting for T, N, and chemo, the N category
+and chemo use are no longer significant. We may simply be underpowered (likely).
+
+Interestingly, T category remains an an independent predictor of FATE-CBCT AUC
+even when adjusted for the volume of GTV primary. This is surprising because
+GTV primary is actually factored into the calculation of FATE-CBCT.
+
+```{r}
+glm_auc_by_tnm <- df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  mutate(
+    `N category` = as.numeric(n_stage_ajcc7),
+    `T category` = as.numeric(t_stage_ajcc7)
+  ) %>%
+  glm(auc ~ `N category` + `T category`, data = .)
+
+glm_auc_by_tnm %>%
+  forest_model()
+
+glm_auc_by_t_chemo <- df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  mutate(
+    `T category` = as.numeric(t_stage_ajcc7)
+  ) %>%
+  glm(auc ~ chemo + `T category`, data = .)
+
+glm_auc_by_t_chemo %>%
+  forest_model()
+
+glm_auc_chemo_gtv <- df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  mutate(
+    `N category` = as.numeric(n_stage_ajcc7),
+    `T category` = as.numeric(t_stage_ajcc7)
+  ) %>%
+  glm(auc ~ chemo + `T category`, data = .)
+glm_auc_chemo_gtv %>% forest_model()
+
+df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  mutate(
+    `N category` = as.numeric(n_stage_ajcc7),
+    `T category` = as.numeric(t_stage_ajcc7)
+  ) %>%
+  glm(auc ~ `N category` + `T category` + chemo, data = .) %>%
+  forest_model()
+
+df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  group_by(n_stage_ajcc7, t_stage_ajcc7) %>%
+  mutate(
+    mean_auc = mean(auc)
+  ) %>%
+  ggplot(aes(
+    x = t_stage_ajcc7,
+    y = n_stage_ajcc7,
+    fill = mean_auc
+  )) +
+  geom_tile() +
+  scale_fill_distiller(palette = 'Blues', direction=1) +
+  geom_text(aes(label = round(mean_auc, 1)))
+
+df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  mutate(
+    `N category` = as.numeric(n_stage_ajcc7),
+    `T category` = as.numeric(t_stage_ajcc7)
+  ) %>%
+  glm(auc ~ log(gtv_primary) + `T category`, data = .) %>%
+  forest_model()
+
+df_clinical %>%
+  count(n_stage_ajcc7, chemo)
+```
+
+
+### Baseline GTV and EBV characteristics of CBCT clusters
+
+Baseline EBV DNA level was not a significant driver of AUC.
+
+```{r cluster_traces_by_gtv}
+pd_ebv_baseline <- plotdf_ebv %>%
+  filter(timing_with_treatment == 'pre-treatment') %>%
+  filter(! is.na(ebv_actual)) %>%
+  left_join(df_airvolume_auc) %>%
+  mutate(`log EBV (baseline)` = log10(1 + ebv_actual))
+
+val_corstring_ebv_baseline_auc <- with(
+  pd_ebv_baseline,
+  sprintf(
+    'r = %s [%s, %s], p=%s',
+    cor.test(`log EBV (baseline)`, auc)$statistic %>% signif(2),
+    cor.test(`log EBV (baseline)`, auc)$conf.int[1] %>% signif(2),
+    cor.test(`log EBV (baseline)`, auc)$conf.int[2] %>% signif(2),
+    cor.test(`log EBV (baseline)`, auc)$p.value %>% signif(2)
+  )
+)
+
+pd_ebv_baseline %>%
+  ggplot(aes(
+    x = ebv_actual,
+    y = auc
+  )) +
+  scale_x_log10() +
+  geom_point() +
+  labs(
+    x = 'Baseline EBV level',
+    y = 'AUC of FATE-CBCT'
+  ) +
+  geom_smooth(method = 'lm') +
+  annotate(
+    'text',
+    label = val_corstring_ebv_baseline_auc,
+    x = 5, 
+    y = 0.5,
+    hjust = 0
+  )
+```
+
+
+### Decreased end-of-treatment air volume occurred in two patients with detectable end of treatment EBV
+
+Four patients with detectable end of treatment EBV DNA had lower
+FATE-CBCT levels. The comparison of AUCs with Wilcoxon test is
+shown below.
+
+```{r cbct_traces_by_ebv_posttreatment, fig.height = 3.5, fig.width = 11}
+plot_airvolume_cluster_traces_by_ebv_posttreatment <- plotdf_ebv %>%
+  filter(timing_with_treatment == 'post-treatment') %>%
+  left_join(df_airvolume_processed) %>%
+  mutate(posttreatment_ebv_detectable = if_else(ebv_actual > 0, 'Yes', 'No') %>% factor(levels = c('No', 'Yes'))) %>%
+  ggplot(aes(
+    x = fraction,
+    y = smoothed_normalized,
+    color = posttreatment_ebv_detectable,
+    group = patient,
+    size = posttreatment_ebv_detectable
+  )) +
+  geom_line(data = df_airvolume_processed, color = 'grey90', size = 0.5) +
+  #facet_wrap(~ posttreatment_ebv_detectable, ncol = 1) +
+  geom_line() +
+  scale_color_manual(values = c('#8888CC', '#AA2222')) +
+  scale_size_manual(values = c(0.5, 1.5)) +
+  labs(
+    color = 'EBV DNA Detectable',
+    size = 'EBV DNA Detectable',
+    x = 'Fraction',
+    y = '% air in GTV'
+  ) +
+  theme(legend.position = 'bottom')
+
+plotdf_ebv_auc <- plotdf_ebv %>%
+  distinct(patient, timing_with_treatment, ebv_actual) %>%
+  spread(timing_with_treatment, ebv_actual) %>%
+  filter(!is.na(`post-treatment`)) %>%
+  mutate(
+    ebv_post_detectable = if_else(`post-treatment` > 0, 'Yes', 'No') %>% factor
+  ) %>%
+  left_join(df_airvolume_auc) %>%
+  filter(`pre-treatment` > 0)
+
+val_auc_by_ebv_posttreatment_p <- with(
+  plotdf_ebv_auc,
+  wilcox.test(auc ~ ebv_post_detectable)$p.value
+) %>%
+  pval_to_string()
+
+plot_postebvgroup_auc <- plotdf_ebv_auc %>%
+  ggplot(aes(
+    x = ebv_post_detectable,
+    y = auc
+  )) +
+  geom_violin(fill='grey90', color=NA) +
+  geom_boxplot(width = 0.2, fill='white') +
+  geom_beeswarm(aes(color = ebv_post_detectable)) +
+  geom_signif(
+    comparisons = list(c("Yes", "No")),
+    annotations = sprintf('%s', val_auc_by_ebv_posttreatment_p)
+  ) +
+  ylim(0, 14) +
+  labs(
+    x = 'Post-RT EBV\nDetectable',
+    y = 'AUC'
+  ) +
+  theme(legend.position = 'none') +
+  scale_color_brewer(palette = 'Set1')
+
+p_ebv_posttreatment_meantraces <- plotdf_ebv %>%
+  filter(timing_with_treatment == 'post-treatment') %>%
+  left_join(df_airvolume_smooth) %>%
+  mutate(posttreatment_ebv_detectable = if_else(ebv_actual > 0, 'Detectable', 'Undetectable')) %>%
+  group_by(
+    posttreatment_ebv_detectable, fraction
+  ) %>%
+  summarise(
+    fraction_mean = mean(percent_vol),
+    fraction_sd = sd(percent_vol),
+    confint = 1.96 * fraction_sd / sqrt(n()),
+    lCI = fraction_mean - confint,
+    uCI = fraction_mean + confint
+  ) %>%
+  ggplot(aes(
+    x = fraction,
+    group = posttreatment_ebv_detectable
+  )) +
+  geom_ribbon(aes(
+    ymin = lCI,
+    ymax = uCI,
+    fill = posttreatment_ebv_detectable
+  ), alpha = 0.3) +
+  geom_line(aes(
+    y = fraction_mean,
+    color = posttreatment_ebv_detectable,
+  )) +
+  scale_color_brewer(palette = 'Set1') +
+  scale_fill_brewer(palette = 'Set1') +
+  labs(
+    x = 'Fraction',
+    y = 'Mean % GTVp',
+    color = 'Post-RT EBV',
+    fill = 'Post-RT EBV'
+  )
+
+plot_grid(
+  plot_airvolume_cluster_traces_by_ebv_posttreatment,
+  plot_postebvgroup_auc,
+  p_ebv_posttreatment_meantraces,
+  nrow = 1,
+  align = 'v',
+  rel_widths = c(2,2,3)
+)
+
+plotdf_ebv_auc %>%
+  group_by(ebv_post_detectable) %>%
+  summarise(
+    median_auc = median(auc),
+    mean_auc = mean(auc)
+  ) %>%
+  pander()
+```
+
+
+```{r cbctfate_clinical_characteristics, fig.height = 10, fig.width = 9}
+plot_forest_stage_chemo <- glm(
+  auc ~ `T category` + `N category` + chemo,
+  data = df_airvolume_auc %>%
+    left_join(df_clinical) %>%
+    mutate(
+      `T category` = gsub('(.*?) .*', '\\1', t_stage_ajcc7) %>%
+        factor(levels = c('T1', 'T2', 'T3', 'T4')) %>% as.numeric(),
+      `N category` = n_stage_ajcc7 %>% factor(levels = c('N0', 'N1', 'N2', 'N3a', 'N3b')) %>% as.numeric
+    )
+  ) %>%
+  forest_model(recalculate_width = 8)
+
+p_traces_by_t <- df_airvolume_smooth %>%
+  left_join(df_clinical) %>%
+  mutate(t_group = if_else(t_stage_ajcc7 %in% c('T1', 'T2'), 'T1-2', 'T3-4')) %>%
+  ggplot(aes(
+    x = fraction,
+    y = percent_vol,
+    color = t_group,
+    group = patient
+  )) +
+  geom_line(
+    data = df_airvolume_smooth %>%
+      left_join(df_clinical),
+    color = 'Grey90'
+  ) +
+  geom_line() +
+  facet_wrap(~t_group) +
+  scale_color_brewer(palette = 'Set1') +
+  labs(
+    color = 'T category',
+    y = '% air in GTV'
+  )
+
+pd_means_by_t_category <- df_airvolume_smooth %>%
+  left_join(df_clinical) %>%
+  mutate(t_group = if_else(t_stage_ajcc7 %in% c('T1', 'T2'), 'T1-2', 'T3-4')) %>%
+  group_by(t_group, fraction) %>%
+  summarise(
+    fraction_mean = mean(percent_vol),
+    fraction_sd = sd(percent_vol),
+    confint = 1.96 * fraction_sd / sqrt(n())
+  ) %>%
+  ungroup()
+
+p_means_by_t_category <- pd_means_by_t_category %>%
+  ggplot(aes(
+    x = fraction,
+    y = fraction_mean,
+    ymin = fraction_mean - confint,
+    ymax = fraction_mean + confint,
+    color = t_group,
+    fill = t_group
+  )) +
+  geom_ribbon(alpha = 0.5, color = NA) +
+  geom_line() +
+  scale_color_brewer(palette = 'Set1') +
+  scale_fill_brewer(palette = 'Pastel1') +
+  labs(
+    color = '',
+    fill = '',
+    x = 'Fraction',
+    y = '% air in GTV'
+  ) +
+  geom_text_repel(
+    aes(label = t_group),
+    data = pd_means_by_t_category %>% filter(fraction == 30)
+  ) +
+  theme(legend.position = 'none')
+
+val_auc_by_t_p <- df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  mutate(t_group = if_else(t_stage_ajcc7 %in% c('T1', 'T2'), 'T1-2', 'T3-4') %>% factor()) %>%
+  with(wilcox.test(auc ~ t_group)) %>%
+  .$p.value %>%
+  pval_to_string()
+
+p_auc_by_t <- df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  mutate(t_group = if_else(t_stage_ajcc7 %in% c('T1', 'T2'), 'T1-2', 'T3-4') %>% factor()) %>%
+  ggplot(aes(
+    x = t_stage_ajcc7,
+    y = auc
+  )) +
+  geom_violin(color = NA, fill = 'grey90') +
+  geom_boxplot(width = 0.2, fill = 'white') +
+  geom_beeswarm(aes(color = t_group)) +
+  labs(
+    x = 'T category',
+    y = 'AUC'
+  ) +
+  geom_signif(
+    xmin = 1.5, xmax = 3.5, y_position = 12,
+    annotation = val_auc_by_t_p
+  ) +
+  ylim(0, 13) +
+  scale_color_brewer(palette = 'Set1')  +
+  theme(legend.position = 'none')
+
+p_traces_by_ebv <- plotdf_ebv %>%
+  filter(timing_with_treatment == 'post-treatment') %>%
+  left_join(df_airvolume_processed) %>%
+  mutate(posttreatment_ebv_detectable = if_else(ebv_actual > 0, 'Detectable', 'Undetectable') %>% factor(levels = c('Undetectable', 'Detectable'))) %>%
+  ggplot(aes(
+    x = fraction,
+    y = smoothed_normalized,
+    color = posttreatment_ebv_detectable,
+    group = patient
+  )) +
+  geom_line(data = df_airvolume_processed, color = 'grey90', size = 0.5) +
+  geom_line() +
+  scale_size_manual(values = c(0.5, 1.5)) +
+  scale_color_brewer(palette = 'Set1') +
+  labs(
+    color = 'EBV DNA Detectable',
+    x = 'Fraction',
+    y = '% air in GTV'
+  ) +
+  facet_wrap(~posttreatment_ebv_detectable)
+
+pd_means_by_ebv <- plotdf_ebv %>%
+  filter(timing_with_treatment == 'post-treatment') %>%
+  left_join(df_airvolume_smooth) %>%
+  mutate(posttreatment_ebv_detectable = if_else(ebv_actual > 0, 'Detectable', 'Undetectable') %>% factor(levels = c('Undetectable', 'Detectable'))) %>%
+  group_by(fraction, posttreatment_ebv_detectable) %>%
+  summarise(
+    fraction_mean = mean(percent_vol),
+    fraction_sd = sd(percent_vol),
+    confint = 1.96 * fraction_sd / sqrt(n())
+  ) %>%
+  ungroup()
+
+p_means_by_ebv <- pd_means_by_ebv %>%
+  ggplot(aes(
+    x = fraction,
+    y = fraction_mean,
+    ymin = fraction_mean - confint,
+    ymax = fraction_mean + confint,
+    color = posttreatment_ebv_detectable,
+    fill = posttreatment_ebv_detectable
+  )) +
+  geom_ribbon(alpha = 0.5, color = NA) +
+  geom_line() +
+  scale_color_brewer(palette = 'Set1') +
+  scale_fill_brewer(palette = 'Pastel1') +
+  labs(
+    color = '',
+    fill = '',
+    x = 'Fraction',
+    y = '% air in GTV'
+  ) +
+  theme(legend.position = 'none') +
+  geom_text_repel(
+    aes(label = posttreatment_ebv_detectable),
+    data = pd_means_by_ebv %>% filter(fraction == 30)
+  )
+
+{
+  layout = '
+  ABC
+  DEF
+  GHI
+  JJJ
+  '
+  (p_traces_by_t + theme(legend.position = 'none') + labs(tag='A')) +
+    p_means_by_t_category +
+    p_auc_by_t +
+    (plot_airvolume_bychemo_traces + theme(legend.position = 'none') + labs(tag='B')) +
+    plot_airvolume_bychemo_means +
+    p_auc_by_chemo + ylim(0, 13) +
+    (p_traces_by_ebv + theme(legend.position = 'none') + labs(tag='C')) +
+    p_means_by_ebv +
+    plot_postebvgroup_auc +
+    ((
+      plot_airvolume_bysmoking_means + labs(tag='D') |
+      (p_auc_by_smoking + ylim(0, 13) + theme(legend.position = 'none')) |
+      plot_scatter_smoking_py_hx_auc |
+      guide_area()) +
+      plot_layout(widths = c(4,2,4,0.5))
+    ) +
+    plot_layout(widths = c(2,1,1), design = layout)
+}
+
+
+```
+
+
+
+### Exploratory analysis reveals potentially prognostic mid- and end-treatment slope differences
+
+This section describes a post-hoc analysis to discover potential predictive
+biomarkers. Note that this analysis is **exploratory** and requires validation
+in an independent cohort. I emphasize this caution because **statistically
+significant findings are not necessarily reproducible** - we are
+**searching for an effect**, and looking for parameters that maximize effects.
+These parameters are then potential biomarkers which can be validated in a
+follow-up cohort.
+
+The approach is to estimate slope at every day of treatment and search in an
+exploratory fashion for differences between patients who do well and those who
+eventually experience treatment failure. A more sophisticated approach for when
+we have more data available would be to perform a regularized Cox regression,
+such as using a Lasso model. This would allow us to take into account the 
+time to failure, not just failure itself. However, in the setting of
+radical treatment with fairly few failure events, simply splitting on failure
+should be sufficient to yield a useful search for biomarkers.
+
+
+```{r cbct_slope_and_survival, fig.width = 10, fig.height = 6}
+#max_radius_slope = 3
+
+df_airvolume_processed_slope <- df_airvolume_smooth %>%
+  group_by(patient) %>%
+  #mutate(
+  #  slope = (percent_vol[pmin(fraction + max_radius_slope, max(fraction))] - percent_vol[pmax(fraction - max_radius_slope, 1)]) / (pmin(fraction + max_radius_slope, max(fraction)) - pmax(fraction - max_radius_slope, 1))
+  #) %>%
+  ungroup() %>%
+  left_join(df_clinical)
+
+plot_traces_volume_by_failure <- df_airvolume_processed_slope %>%
+  mutate(
+    tx_failure = if_else(failure, 'Recurrence', 'No Recurrence')
+  ) %>%
+  ggplot(aes(
+    x = fraction,
+    y = percent_vol,
+    group = patient
+  )) +
+  geom_line(aes(
+    color = failure
+  )) +
+  geom_line(
+    data = df_airvolume_processed_slope %>%
+      mutate(tx_failure = if_else(failure, 'Recurrence', 'No Recurrence')) %>%
+      group_by(fraction, tx_failure) %>%
+      summarise(percent_vol = mean(percent_vol), patient = '1') %>%
+      ungroup(),
+    size = 3,
+    color = 'black'
+  ) +
+  facet_wrap(~ tx_failure) +
+  scale_color_brewer(palette = 'Set1') +
+  labs(
+    x = 'Radiotherapy Fraction',
+    y = '% air in GTV',
+    color = 'Recurrence'
+  )
+
+plot_traces_slope_by_failure <- df_airvolume_smooth %>%
+  left_join(df_clinical) %>%
+  mutate(
+    tx_failure = if_else(failure, 'Recurrence', 'No Recurrence')
+  ) %>%
+  ggplot(aes(
+    x = fraction,
+    y = slope,
+    group = patient
+  )) +
+  geom_line(aes(
+    color = failure
+  )) +
+  geom_line(
+    data = df_airvolume_smooth %>%
+      left_join(df_clinical) %>%
+      mutate(tx_failure = if_else(failure, 'Recurrence', 'No Recurrence')) %>%
+      group_by(fraction, tx_failure) %>%
+      summarise(slope = mean(slope), patient = '1') %>% 
+      ungroup(),
+    size = 3,
+    color = 'black'
+  ) +
+  facet_wrap(~tx_failure) +
+  scale_color_brewer(palette = 'Set1') +
+  labs(
+    x = 'Radiotherapy Fraction',
+    y = 'Slope of Volume',
+    color = 'Recurrence'
+  )
+  
+df_airvolume_processed_slope_by_failure <- df_airvolume_smooth %>%
+  left_join(df_clinical) %>%
+  group_by(fraction, failure) %>%
+  summarise(
+    mean_vol = mean(percent_vol),
+    ci_vol = 1.96 * sd(percent_vol) / sqrt(n()),
+    mean_slope = mean(slope),
+    ci_slope = 1.96 * sd(slope) / sqrt(n()),
+  ) %>%
+  ungroup()
+
+plot_mean_volume_by_failure <- df_airvolume_processed_slope_by_failure %>%
+  ggplot(aes(
+    x = fraction,
+    y = mean_vol,
+    ymin = mean_vol - ci_vol,
+    ymax = mean_vol + ci_vol,
+    color = failure,
+    fill = failure,
+    group = failure
+  )) +
+  geom_ribbon(color = NA, alpha = 0.3) +
+  geom_line() +
+  scale_color_brewer(palette = 'Set1') +
+  scale_fill_brewer(palette = 'Set1') +
+  labs(
+    x = 'Radiotherapy Fraction',
+    y = '% air in GTV',
+    color = 'Recurrence\n(95% CI)',
+    fill = 'Recurrence\n(95% CI)'
+  )
+
+pd_wilcox_biomarkersearch <- df_airvolume_smooth %>%
+  left_join(df_clinical) %>%
+  select(patient, fraction, failure, slope, percent_vol) %>%
+  gather(metric, value, slope, percent_vol) %>%
+  filter(fraction > 0) %>%
+  group_by(fraction, metric) %>%
+  summarise(
+    wilcox_p = wilcox.test(value ~ failure)$p.value
+  ) %>%
+  ungroup()
+
+val_midtreatment_slope_fraction <- pd_wilcox_biomarkersearch %>%
+  filter(metric == 'slope') %>%
+  filter(wilcox_p == min(wilcox_p)) %>%
+  filter(row_number() == 1) %>%
+  .$fraction
+ 
+plot_mean_slope_by_failure <- df_airvolume_processed_slope_by_failure %>%
+  ggplot(aes(
+    x = fraction,
+    y = mean_slope,
+    ymin = mean_slope - ci_slope,
+    ymax = mean_slope + ci_slope,
+    color = failure,
+    fill = failure,
+    group = failure
+  )) +
+  geom_ribbon(color = NA, alpha = 0.3) +
+  geom_line() +
+  scale_color_brewer(palette = 'Set1') +
+  scale_fill_brewer(palette = 'Set1') +
+  labs(
+    x = 'Radiotherapy Fraction',
+    y = 'Mean Slope of Volume',
+    color = 'Recurrence\n(95% CI)',
+    fill = 'Recurrence\n(95% CI)'
+  ) +
+  geom_vline(xintercept = 15, color = 'black') +
+  annotate(
+    'text',
+    x = 15.5,
+    y = 1.5,
+    label = sprintf('Max difference\nat fraction %s', val_midtreatment_slope_fraction),
+    hjust = 0
+  )
+
+plot_grid(
+  plot_traces_volume_by_failure + theme(legend.position = 'none'),
+  plot_traces_slope_by_failure + theme(legend.position = 'none'),
+  NULL,
+  plot_mean_volume_by_failure + theme(legend.position = 'none'),
+  plot_mean_slope_by_failure + theme(legend.position = 'none'),
+  get_legend(plot_mean_slope_by_failure),
+  ncol = 3,
+  rel_widths = c(3,3,1),
+  labels = c('A', 'B')
+)
+```
+
+
+```{r crossvalidation}
+library(boot)
+
+pd_cv_failure <- df_airvolume_smooth %>%
+  left_join(df_clinical) %>%
+  select(patient, fraction, slope, percent_vol, failure)
+
+set.seed(1234)
+
+pd_cv_error <- tibble(
+  fraction = 1:35,
+  cv_error_slope = sapply(1:35, function(fx) {
+    glm_failure <- pd_cv_failure %>%
+    filter(fraction == fx) %>%
+    glm(
+      failure ~ slope,
+      data = .,
+      family = 'binomial'
+    )
+  
+    cv.glm(
+      pd_cv_failure %>%
+        filter(fraction == fx),
+      glmfit = glm_failure,
+      K = 39,
+    )$delta[[2]]
+  }),
+  cv_error_volume = sapply(1:35, function(fx) {
+    glm_failure <- pd_cv_failure %>%
+    filter(fraction == fx) %>%
+    glm(
+      failure ~ percent_vol,
+      data = .,
+      family = 'binomial'
+    )
+  
+    cv.glm(
+      pd_cv_failure %>%
+        filter(fraction == fx),
+      glmfit = glm_failure,
+      K = 39
+    )$delta[[2]]
+  })
+)
+
+val_min_cv_error <- min(pd_cv_error$cv_error_slope, pd_cv_error$cv_error_volume)
+val_max_cv_error <- max(pd_cv_error$cv_error_slope, pd_cv_error$cv_error_volume)
+
+p_cv_error_slope <- pd_cv_error %>%
+  ggplot(aes(
+    x = fraction,
+    y = cv_error_slope
+  )) +
+  geom_line() +
+  geom_point() +
+  labs(
+    x = 'Radiotherapy fraction',
+    y = 'LOO-CV error'
+  ) +
+  ylim(val_min_cv_error, val_max_cv_error) +
+  geom_vline(xintercept = 15, color = 'black') +
+  scale_x_continuous(breaks = c(1,10,15,20,30))
+
+p_cv_error_volume <- pd_cv_error %>%
+  ggplot(aes(
+    x = fraction,
+    y = cv_error_volume
+  )) +
+  geom_line() +
+  geom_point() +
+  labs(
+    x = 'Radiotherapy fraction',
+    y = 'LOO-CV error'
+  ) +
+  ylim(val_min_cv_error, val_max_cv_error)
+```
+
+
+Next, we will look at local failure specifically.
+
+```{r slope_by_local_failure, fig.width = 10, fig.height = 6}
+df_airvolume_processed_slope_by_local_failure <- df_airvolume_processed_slope %>%
+  group_by(fraction, failure=locoregional_failure) %>%
+  summarise(
+    mean_vol = mean(percent_vol),
+    ci_vol = 1.96 * sd(percent_vol) / sqrt(n()),
+    mean_slope = mean(slope),
+    ci_slope = 1.96 * sd(slope) / sqrt(n()),
+  ) %>%
+  ungroup()
+
+plot_traces_volume_by_local_failure <- df_airvolume_processed_slope %>%
+  mutate(
+    tx_failure = if_else(locoregional_failure, 'Locoregional Failure', 'No Locoregional Failure')
+  ) %>%
+  ggplot(aes(
+    x = fraction,
+    y = percent_vol,
+    group = patient
+  )) +
+  geom_line() +
+  geom_line(
+    data = df_airvolume_processed_slope %>%
+      mutate(tx_failure = if_else(locoregional_failure, 'Locoregional Failure', 'No Locoregional Failure')) %>%
+      group_by(fraction, tx_failure) %>%
+      summarise(percent_vol = mean(percent_vol), patient = '1') %>%
+      ungroup(),
+    size = 3,
+    color = 'black'
+  ) +
+  facet_wrap(~ tx_failure) +
+  scale_color_brewer(palette = 'Set1') +
+  labs(
+    x = 'Radiotherapy Fraction',
+    y = '% air in GTV'
+  )
+
+plot_traces_slope_by_local_failure <- df_airvolume_processed_slope %>%
+  mutate(
+    tx_failure = if_else(locoregional_failure, 'Locoregional Failure', 'No Locoregional Failure')
+  ) %>%
+  ggplot(aes(
+    x = fraction,
+    y = slope,
+    group = patient
+  )) +
+  geom_line() +
+  geom_line(
+    data = df_airvolume_processed_slope %>%
+      mutate(tx_failure = if_else(locoregional_failure, 'Locoregional Failure', 'No Locoregional Failure')) %>%
+      group_by(fraction, tx_failure) %>%
+      summarise(slope = mean(slope), patient = '1') %>% 
+      ungroup(),
+    size = 3,
+    color = 'black'
+  ) +
+  facet_wrap(~tx_failure) +
+  scale_color_brewer(palette = 'Set1') +
+  labs(
+    x = 'Radiotherapy Fraction',
+    y = 'Slope of Volume'
+  )
+
+plot_mean_volume_by_local_failure <- df_airvolume_processed_slope_by_local_failure %>%
+  ggplot(aes(
+    x = fraction,
+    y = mean_vol,
+    ymin = mean_vol - ci_vol,
+    ymax = mean_vol + ci_vol,
+    color = failure,
+    fill = failure,
+    group = failure
+  )) +
+  geom_ribbon(color = NA, alpha = 0.3) +
+  geom_line() +
+  scale_color_brewer(palette = 'Set1') +
+  scale_fill_brewer(palette = 'Set1') +
+  labs(
+    x = 'Radiotherapy Fraction',
+    y = '% air in GTV',
+    color = 'Locoregional Failure\n(95% CI)',
+    fill = 'Locoregional Failure\n(95% CI)'
+  )
+ 
+plot_mean_slope_by_local_failure <- df_airvolume_processed_slope_by_local_failure %>%
+  ggplot(aes(
+    x = fraction,
+    y = mean_slope,
+    ymin = mean_slope - ci_slope,
+    ymax = mean_slope + ci_slope,
+    color = failure,
+    fill = failure,
+    group = failure
+  )) +
+  geom_ribbon(color = NA, alpha = 0.3) +
+  geom_line() +
+  scale_color_brewer(palette = 'Set1') +
+  scale_fill_brewer(palette = 'Set1') +
+  labs(
+    x = 'Radiotherapy Fraction',
+    y = 'Mean Slope of Volume',
+    color = 'Locoregional Failure\n(95% CI)',
+    fill = 'Locoregional Failure\n(95% CI)'
+  )
+
+plot_grid(
+  plot_traces_volume_by_local_failure + theme(legend.position = 'none'),
+  plot_traces_slope_by_local_failure + theme(legend.position = 'none'),
+  get_legend(plot_traces_volume_by_local_failure),
+  plot_mean_volume_by_local_failure + theme(legend.position = 'none'),
+  plot_mean_slope_by_local_failure + theme(legend.position = 'none'),
+  get_legend(plot_mean_slope_by_local_failure),
+  ncol = 3,
+  rel_widths = c(3,3,1)
+)
+```
+
+Compared to all failures
+
+- Still a slope difference around mid-treatment
+- More pronounced difference in end-of-treatment volume
+- No difference in end-of-treatment slope, unlike the “all failure” graph
+- It's remarkable how uniform the volume curves are.
+
+### Mid-treatment slope predicts treatment outcomes.
+
+Slope at fraction `r val_midtreatment_slope_fraction` seems to show the greatest difference to RFS.
+KM curves for this shown below:
+
+```{r slope_midtreatment_survival, fig.width = 6, fig.height = 5}
+data_slope_midtreatment <- df_airvolume_processed_slope %>%
+  filter(fraction == val_midtreatment_slope_fraction) %>%
+  mutate(
+    slope_group = factor(
+      if_else(slope > median(slope), 'Above Median', 'Below Median'),
+      levels = c('Below Median', 'Above Median')
+    )
+  )
+
+plot_midtreatment_slope_traces <- df_airvolume_processed %>%
+  left_join(data_slope_midtreatment %>% select(patient, slope_group)) %>%
+  ggplot(aes(
+    x = fraction,
+    y = percent_vol,
+    color = slope_group,
+    group = patient
+  )) +
+  geom_line(data = df_airvolume_processed, color = 'grey80') +
+  geom_line() +
+  scale_color_brewer(palette = 'Set1') +
+  facet_wrap(~slope_group) +
+  labs(
+    y = '% air in GTV',
+    color = 'Mid-treatment Slope'
+  ) +
+  geom_vline(xintercept = val_midtreatment_slope_fraction, color = 'black') +
+  geom_segment(
+    aes(
+      x = fraction - 3,
+      xend = fraction + 3,
+      y = percent_vol - (3 * slope),
+      yend = percent_vol + (3 * slope)
+    ),
+    data = data_slope_midtreatment,
+    color = 'black',
+    size = 1,
+    alpha = 0.5
+  )
+
+plot_midtreatment_slope_lffs <- data_slope_midtreatment %>%
+  surv_fit(Surv(time_to_local_failure, local_failure) ~ slope_group, data = .) %>%
+  ggsurvplot(pval = T) +
+  labs(y = 'LFFS', x = 'Time (months)')
+
+plot_midtreatment_slope_lrffs <- data_slope_midtreatment %>%
+  surv_fit(Surv(time_to_locoregional_failure, locoregional_failure) ~ slope_group, data = .) %>%
+  ggsurvplot(pval = T) +
+  labs(y = 'LRFFS', x = 'Time (months)')
+
+survfit_rfs_by_midtreatment_slope <- data_slope_midtreatment %>%
+  surv_fit(Surv(time_to_earliest_failure, failure) ~ slope_group, data = .)
+
+plot_midtreatment_slope_ffs <- survfit_rfs_by_midtreatment_slope %>%
+  ggsurvplot(pval = T) +
+  labs(y = 'RFS', x = 'Time (months)')
+
+plot_midtreatment_slope_rffs <- data_slope_midtreatment %>%
+  surv_fit(Surv(time_to_regional_failure, regional_failure) ~ slope_group, data = .) %>%
+  ggsurvplot(pval = T) +
+  labs(y = 'RRFS', x = 'Time (months)')
+
+plot_midtreatment_slope_dmfs <- data_slope_midtreatment %>%
+  surv_fit(Surv(time_to_distant_failure, distant_failure) ~ slope_group, data = .) %>%
+  ggsurvplot(pval = T) +
+  labs(y = 'DMFS', x = 'Time (months)')
+
+plot_grid(
+  plot_midtreatment_slope_traces + theme(legend.position = 'top'),
+  plot_grid(
+    plot_midtreatment_slope_lrffs$plot + scale_color_brewer(palette = 'Set1') + theme(legend.position = 'none'),
+    plot_midtreatment_slope_ffs$plot + scale_color_brewer(palette = 'Set1') + theme(legend.position = 'none'),
+    nrow = 1
+  ),
+  ncol = 1
+)
+
+coxph_rfs_by_midtreatment_slope <- data_slope_midtreatment %>%
+  coxph(Surv(time_to_distant_failure, distant_failure) ~ slope_group, data = .)
+```
+
+```{r biomarker_discovery, fig.width = 8, fig.height = 12}
+p_histogram_midslope <- data_slope_midtreatment %>%
+  filter(! grepl('palliative', tx_intent)) %>%
+  ggplot(aes(
+    x = slope,
+    fill = slope_group
+  )) +
+  geom_histogram() +
+  geom_vline(
+    xintercept = median(data_slope_midtreatment$slope),
+    color = 'black'
+  ) +
+  annotate(
+    geom = 'text',
+    x = 0.6,
+    y = 6,
+    label = sprintf('Median: %s cc/Fx', signif(median(data_slope_midtreatment$slope), 2)),
+    hjust = 0
+  ) +
+  scale_fill_brewer(palette = 'Set1') +
+  labs(
+    y = 'Count',
+    x = sprintf('Mid-treatment slope (Fx %s)', val_midtreatment_slope_fraction)
+  )
+
+search_fractions <- pd_wilcox_biomarkersearch %>%
+  filter(metric == 'slope') %>%
+  filter(wilcox_p < 0.05) %>%
+  {.$fraction}
+
+val_slope_signif_min_fraction <- min(search_fractions)
+val_slope_signif_max_fraction <- max(search_fractions)
+
+p_wilcox_biomarkersearch_slope <- pd_wilcox_biomarkersearch %>%
+  filter(metric == 'slope') %>%
+  ggplot(aes(
+    x = fraction,
+    y = wilcox_p,
+    group = metric
+  )) +
+  annotate(
+    'rect',
+    xmin = val_slope_signif_min_fraction-0.5,
+    xmax = val_slope_signif_max_fraction+0.5,
+    ymin = 0,
+    ymax = 1,
+    fill = 'Grey90',
+    color = NA
+  ) +
+  geom_line() +
+  geom_point() +
+  scale_color_brewer(palette = 'Set1') +
+  labs(
+    x = 'Radiotherapy Fraction',
+    y = 'p-value'
+  ) +
+  ylim(0, 1) +
+  geom_vline(color = 'black', xintercept = val_midtreatment_slope_fraction)
+
+p_wilcox_biomarkersearch_fate <- pd_wilcox_biomarkersearch %>%
+  filter(metric == 'percent_vol') %>%
+  ggplot(aes(
+    x = fraction,
+    y = wilcox_p,
+    group = metric
+  )) +
+  geom_line() +
+  geom_point() +
+  scale_color_brewer(palette = 'Set1') +
+  labs(
+    x = 'Radiotherapy Fraction',
+    y = 'p-value'
+  ) +
+  ylim(0, 1)
+
+plot_grid(
+  plot_grid(
+    plot_traces_volume_by_failure + theme(legend.position = 'none'),
+    plot_traces_slope_by_failure + theme(legend.position = 'none'),
+    get_legend(plot_traces_volume_by_failure),
+    plot_mean_volume_by_failure + theme(legend.position = 'none'),
+    plot_mean_slope_by_failure + theme(legend.position = 'none'),
+    get_legend(plot_mean_slope_by_failure),
+    p_cv_error_volume,
+    p_cv_error_slope,
+    NULL,
+    ncol = 3,
+    rel_widths = c(3,3,1),
+    rel_heights = c(2,2,1),
+    labels = c('A', 'B')
+  ),
+  plot_grid(
+    plot_grid(
+      p_histogram_midslope + theme(legend.position = 'none'),
+      plot_midtreatment_slope_traces + theme(legend.position = 'top') + labs(x = 'Radiotherapy Fraction'),
+      rel_widths = c(1,2),
+      labels = c('C', 'D')
+    ),
+    plot_grid(
+      plot_midtreatment_slope_ffs$plot +
+        scale_color_brewer(palette = 'Set1') +
+        theme(legend.position = 'none'),
+      plot_midtreatment_slope_lrffs$plot +
+        scale_color_brewer(palette = 'Set1') +
+        theme(legend.position = 'none'),
+      nrow = 1,
+      labels = c('E')
+    ),
+    ncol = 1
+  ),
+  ncol = 1,
+  rel_heights = c(4,4)
+)
+
+```
+
+
+## Simulating Weekly CBCTs
+
+Many centres do not perform daily CBCTs, only weekly.
+We wanted to see whether our approach could be extrapolated
+to such centres.
+
+We downsampled to include only 1 CBCT per week. We then
+computed AUC using the trapezoid method.
+
+```{r weekly_smoothed, fig.width = 12, fig.height = 8}
+df_airvolume_processed_clustered_weekly <- df_airvolume_processed %>%
+  filter((fraction == 0) | ((fraction - 1) %% 5 == 0)) %>%
+  group_by(patient) %>%
+  mutate(
+    air_volume_proportion = air_volume / gtv_primary,
+    smoothed = smooth.spline(x = fraction, y = air_volume, df=3) %>% predict(fraction) %>% .$y,
+    smoothed_normalized = (smoothed - smoothed[fraction == 0]) / (gtv_primary),
+    normalized = (air_volume - smoothed[fraction == 0]) / (gtv_primary),
+    normalized_percent = normalized * 100,
+    percent_vol = smoothed_normalized * 100
+  ) %>%
+  ungroup()
+
+df_airvolume_smooth_weekly <- df_airvolume_processed %>%
+  filter((fraction == 0) | ((fraction - 1) %% 5 == 0)) %>%
+  left_join(df_clinical) %>%
+  group_by(patient, gtv_primary) %>%
+  arrange(patient, fraction) %>%
+  mutate(
+    fraction_standardized = fraction * 35 / max(fraction),
+    air_volume_proportion = air_volume / gtv_primary
+  ) %>%
+  summarise(
+    fraction = 0:35,
+    smoothed = smooth.spline(x = fraction_standardized, y = air_volume, df=3) %>% predict(fraction) %>% .$y,
+    slope_prenorm = grad(
+      function(x) {
+        return(smooth.spline(x = fraction_standardized, y = air_volume, df=3) %>% predict(x) %>% .$y)
+      },
+      x = 0:35
+    )
+  ) %>%
+  mutate(
+    smoothed_normalized = (smoothed - smoothed[fraction == 0]) / (gtv_primary),
+    percent_vol = smoothed_normalized * 100,
+    slope = slope_prenorm / gtv_primary * 100
+  ) %>%
+  ungroup() %>%
+  filter((fraction == 0) | ((fraction - 1) %% 5 == 0))
+
+df_airvolume_processed %>%
+  ggplot(aes(
+    x = fraction,
+    y = normalized
+  )) +
+  geom_point(color = 'grey80') +
+  geom_point(color = 'red', data = df_airvolume_processed_clustered_weekly) +
+  geom_line(
+    aes(y = smoothed_normalized, group = patient), color = 'red', data = df_airvolume_processed_clustered_weekly) +
+  facet_wrap(~patient, scales = 'free_y')
+
+df_auc_weekly <- df_airvolume_processed_clustered_weekly %>%
+  group_by(mrn, patient) %>%
+  arrange(mrn, patient, fraction) %>%
+  mutate(
+    previous_fraction = c(fraction[1], fraction[1:(n()-1)]),
+    width = fraction - previous_fraction,
+    previous_volume = c(percent_vol[1], percent_vol[1:(n()-1)]) / 100,
+    area = (percent_vol/100 + previous_volume)/2 * width
+  ) %>%
+  summarise(
+    auc_weekly = sum(area)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    auc_group_weekly = if_else(auc_weekly > median(auc_weekly), 'Above median', 'Below median')
+  )
+
+df_airvolume_processed_clustered_withweekly <- df_airvolume_auc %>%
+  distinct(patient, auc) %>%
+  left_join(df_auc_weekly)
+
+df_airvolume_processed_clustered_withweekly %>%
+  ggplot(aes(
+    x = auc,
+    y = auc_weekly
+  )) +
+  geom_point()
+
+survfit_rfs_by_auc_weekly <- survfit(
+  Surv(time_to_earliest_failure, failure) ~ auc_group_weekly,
+  df_auc_weekly %>% left_join(df_clinical)
+)
+
+df_midtreatment_slope <- df_airvolume_smooth_weekly %>%
+  select(patient, fraction, percent_vol) %>%
+  spread(fraction, percent_vol) %>%
+  mutate(mid_treatment_slope = `21` - `11`) %>%
+  mutate(mid_treatment_slope_group = if_else(mid_treatment_slope > median(mid_treatment_slope), 'Above median', 'Below median')) %>%
+  distinct(patient, mid_treatment_slope, mid_treatment_slope_group)
+```
+
+```{r survival_by_auc_full, fig.width = 8, fig.height = 10}
+p_weekly_traces <- df_airvolume_processed_clustered_weekly %>%
+  left_join(
+    df_airvolume_processed_clustered_withweekly %>%
+      mutate(auc_weekly_group = if_else(auc_weekly > median(auc_weekly), 'Above median', 'Below median')) %>%
+      select(patient, auc_weekly_group)
+  ) %>%
+  ggplot(aes(
+    x = fraction,
+    y = normalized,
+    group = patient,
+    color = auc_weekly_group
+  )) +
+  geom_line() +
+  scale_color_brewer(palette = 'Set1') +
+  ggtitle('Weekly CBCT') +
+  labs(
+    x = 'RT Fraction',
+    y = 'Air volume\n(% GTV)'
+  )
+
+p_daily_weekly_correl <- df_airvolume_processed_clustered_withweekly %>%
+  ggplot(aes(
+    x = auc,
+    y = auc_weekly
+  )) +
+  geom_point() +
+  labs(
+    x = 'Daily AUC',
+    y = 'Weekly AUC'
+  ) +
+  geom_smooth(method = 'lm')
+
+p_surv_weekly_auc <- survfit(
+  Surv(time_to_earliest_failure, failure) ~ auc_group_weekly,
+  df_auc_weekly %>%
+    left_join(df_clinical)
+) %>%
+  ggsurvplot(
+    pval = T,
+    risk.table = T,
+    palette = brewer.pal(n = 3, name='Set1')[1:2],
+    conf.int = T,
+    conf.int.alpha = 0.15
+  ) %>%
+  .$plot +
+  scale_color_brewer(palette = 'Set1') +
+  theme(legend.position = 'none')
+
+p_cox_forest_aucweekly <- coxph(
+  Surv(time_to_earliest_failure, failure) ~ `AUC (weekly)` + Stage,
+  df_auc_weekly %>%
+    left_join(df_clinical) %>%
+    mutate(Stage = as.numeric(stage_ajcc7)) %>%
+    dplyr::rename(`AUC (weekly)` = auc_weekly)
+) %>%
+  forest_model(recalculate_width = dev.size()[2]*0.5)
+
+layout = '
+HH
+AC
+BC
+EF
+'
+
+(
+  (plot_airvolume_traces + labs(tag = 'A') + theme(legend.position = 'top')) +
+  (plot_auc_histogram + labs(tag='B')) +
+  pw_rfs_by_auc +
+  (p_daily_weekly_correl + ggtitle('Weekly CBCT') + labs(tag = 'D')) +
+  (p_surv_weekly_auc + labs(tag = 'E')) +
+  guide_area()
+) +
+  plot_layout(
+    design = layout,
+    guides = 'collect',
+    heights = c(0.1,2,2,2)
+  )
+
+```
+
+
+```{r rfs_by_auc_stage, fig.width = 8, fig.height = 5}
+survfit_rfs_by_auc_lowstage <- survfit(
+  Surv(time_to_earliest_failure, failure) ~ auc_group,
+  data = df_airvolume_auc %>%
+    left_join(df_clinical) %>%
+    filter(stage_ajcc7 %in% c('II', 'III'))
+)
+
+survfit_rfs_by_auc_highstage <- survfit(
+  Surv(time_to_earliest_failure, failure) ~ auc_group,
+  data = df_airvolume_auc %>%
+    left_join(df_clinical) %>%
+    filter(stage_ajcc7 %in% c('IVA', 'IVB'))
+)
+
+get_survplot_table <- function(survfit, legend.title='AUC', legend.labs=c('Above median', 'Below median'), title='', getlegend=F) {
+  p <- survfit %>%
+    ggsurvplot(
+      pval = T,
+      legend.labs = legend.labs,
+      risk.table = T,
+      palette = brewer.pal(n = 3, name='Set1')[1:2],
+      tables.y.text = FALSE,
+      conf.int = T,
+      conf.int.alpha = 0.15,
+      title = title
+    )
+  
+  pw <- (p$plot + theme(legend.position = 'none')) /
+    (p$table + theme(
+        axis.title.y = element_blank(),
+        axis.line.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank()
+      )) +
+    plot_layout(heights = c(5,1))
+  
+  if (getlegend) {
+    return(get_legend(p$plot + labs(color=legend.title, fill=legend.title)))
+  } else {
+    return(pw)
+  }
+}
+
+plot_grid(
+  get_survplot_table(survfit_rfs_by_auc_lowstage, title='Stage II-III', getlegend=T),
+  plot_grid(
+    get_survplot_table(survfit_rfs_by_auc_lowstage, title='Stage II-III'),
+    get_survplot_table(survfit_rfs_by_auc_highstage, title='Stage IVA-IVB'),
+    nrow = 1,
+    labels = c('A', 'B')
+  ),
+  ncol = 1,
+  rel_heights = c(1,10)
+)
+
+```
+
+```{r}
+df_midtreatment_slope %>%
+  left_join(
+    df_airvolume_processed %>%
+      group_by(patient) %>%
+      filter(fraction == max(fraction)) %>%
+      ungroup() %>%
+      select(patient, percent_vol)
+  ) %>%
+  ggplot(aes(
+    x = mid_treatment_slope,
+    y = percent_vol
+  )) +
+  geom_point()
+
+```
+
+
+## Variables for manuscript
+
+```{r}
+val_n <- nrow(df_clinical)
+val_n_rtalone <- sum(!df_clinical$chemo)
+val_n_crt <- sum(df_clinical$chemo)
+val_n_adjuvant <- sum(grepl('AC', df_clinical$tx_intent))
+val_n_induction <- sum(grepl('IC', df_clinical$tx_intent))
+val_followup_median_range <- as.numeric(with(df_clinical, last_followup - rt_start) / 30) %>% {
+  sprintf(
+    '%s [range: %s, %s]',
+    median(., na.rm=T) %>% round(1),
+    min(., na.rm=T) %>% round(1),
+    max(., na.rm=T) %>% round(1)
+  )
+}
+val_n_recur <- sum(df_clinical$failure)
+val_percent_recur <- sprintf('%s%%', round(sum(df_clinical$failure) / nrow(df_clinical) * 100))
+val_auc_median_range <- df_airvolume_auc$auc %>% {
+  sprintf(
+      '%s [%s, %s]',
+      median(., na.rm=T) %>% round(2),
+      min(., na.rm=T) %>% round(2),
+      max(., na.rm=T) %>% round(2)
+    )
+}
+
+val_rfs_by_auc_high_hr <- coxph(
+  Surv(time_to_earliest_failure, failure) ~ auc_group,
+  data = df_airvolume_auc %>% left_join(df_clinical) %>% mutate(auc_group = factor(auc_group, levels= c('Below median', 'Above median')))
+) %>% coef() %>% exp %>% value_to_string
+
+val_rfs_by_auc_p <- survfit(
+  Surv(time_to_earliest_failure, failure) ~ auc_group,
+  data = df_airvolume_auc %>% left_join(df_clinical) %>% mutate(auc_group = factor(auc_group, levels= c('Below median', 'Above median')))
+) %>% surv_pvalue %>% .$pval.txt
+
+val_daily_weekly_correl <- df_airvolume_auc %>% left_join(df_auc_weekly) %>% with(cor_test_string(auc, auc_weekly, 'pearson'))
+
+val_rfs_by_auc_weekly_hr <- coxph(
+    Surv(time_to_earliest_failure, failure) ~ auc_group_weekly,
+    data = df_auc_weekly %>% left_join(df_clinical) %>% mutate(auc_group_weekly = factor(auc_group_weekly, levels= c('Below median', 'Above median')))
+  ) %>% coef() %>% exp %>% value_to_string
+
+val_rfs_by_auc_weekly_p <- survfit(
+    Surv(time_to_earliest_failure, failure) ~ auc_group_weekly,
+    data = df_auc_weekly %>% left_join(df_clinical) %>% mutate(auc_group_weekly = factor(auc_group_weekly, levels= c('Below median', 'Above median')))
+  ) %>% surv_pvalue %>% .$pval.txt
+
+val_auc_by_tnm_t_lor <- glm_auc_by_tnm %>% get_lor('`T category`')
+val_auc_by_tnm_n_lor <- glm_auc_by_tnm %>% get_lor('`N category`')
+
+val_n_n2n3 <- df_clinical$n_stage_ajcc7 %in% c('N2', 'N3') %>% sum
+val_percent_n2n3 <- (val_n_n2n3 / nrow(df_clinical)) %>% value_to_percent()
+val_auc_by_chemo_p
+
+val_auc_by_tnmchemo_t_lor <- glm_auc_by_t_chemo %>% get_lor('`T category`')
+val_auc_by_tnmchemo_chemo_lor <- glm_auc_by_t_chemo %>% get_lor('chemoTRUE')
+
+val_ebv_residual_auc_median <- plotdf_ebv %>%
+  filter(timing_with_treatment == 'post-treatment', ebv_actual > 0) %>%
+  distinct(patient) %>%
+  left_join(df_airvolume_auc) %>%
+  .$auc %>%
+  median() %>%
+  value_to_string()
+
+val_ebv_cleared_auc_median <- plotdf_ebv %>%
+  filter(timing_with_treatment == 'post-treatment', ebv_actual == 0) %>%
+  distinct(patient) %>%
+  left_join(df_airvolume_auc) %>%
+  .$auc %>%
+  median() %>%
+  value_to_string()
+
+
+val_smoker_auc_median <- df_clinical %>%
+  filter(smoking_hx == 'Current') %>%
+  distinct(mrn) %>%
+  left_join(df_airvolume_auc) %>%
+  .$auc %>%
+  median() %>%
+  value_to_string
+
+val_nonsmoker_auc_median <- df_clinical %>%
+  filter(smoking_hx %in% c('Ex-smoker', 'Non-smoker')) %>%
+  distinct(mrn) %>%
+  left_join(df_airvolume_auc) %>%
+  .$auc %>%
+  median() %>%
+  value_to_string()
+
+val_rfs_by_midtreatment_slope_hr <- exp(coef(coxph_rfs_by_midtreatment_slope)) %>% value_to_string
+val_rfs_by_midtreatment_slope_p <- surv_pvalue(survfit_rfs_by_midtreatment_slope)$pval.txt
+
+val_cox_aucstage_auc <- sprintf(
+  'HR=%s [%s], %s',
+  value_to_string(exp(coef(cox_auc_chemo)[['AUC']])), 
+  value_to_string(exp(confint(cox_auc_chemo)['AUC', ])) %>% paste(collapse = ' - '),
+  pval_to_string(summary(cox_auc_chemo)$coefficients['AUC', 'Pr(>|z|)'])
+)
+
+val_t1_t2_auc_median <- df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  filter(t_stage_ajcc7 %in% c('T1', 'T2')) %>%
+  .$auc %>%
+  median %>%
+  value_to_string()
+
+val_t3_t4_auc_median <- df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  filter(t_stage_ajcc7 %in% c('T3', 'T4')) %>%
+  .$auc %>%
+  median %>%
+  value_to_string()
+
+val_auc_by_chemo_crt_median <- df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  filter(chemo) %>%
+  .$auc %>%
+  median %>%
+  value_to_string()
+
+val_auc_by_chemo_rt_median <- df_airvolume_auc %>%
+  left_join(df_clinical) %>%
+  filter(!chemo) %>%
+  .$auc %>%
+  median %>%
+  value_to_string()
+
+val_5yrfs_by_auc_high <- with(summary(fit_survival_all_by_auc, 5*12), surv[strata == 'auc_group=Above median']) %>%
+  value_to_percent()
+val_5yrfs_by_auc_low <- with(summary(fit_survival_all_by_auc, 5*12), surv[strata == 'auc_group=Below median']) %>%
+  value_to_percent()
+
+val_5yrfs_by_auc_weekly_high = summary(survfit_rfs_by_auc_weekly, 5*12) %>% with(surv[strata == 'auc_group_weekly=Above median']) %>% value_to_percent()
+val_5yrfs_by_auc_weekly_low = summary(survfit_rfs_by_auc_weekly, 5*12) %>% with(surv[strata == 'auc_group_weekly=Below median']) %>% value_to_percent()
+
+val_5yrfs_by_slope_high <- summary(survfit_rfs_by_midtreatment_slope, 5*12) %>% with(surv[strata == 'slope_group=Above Median']) %>% value_to_percent()
+val_5yrfs_by_slope_low <- summary(survfit_rfs_by_midtreatment_slope, 5*12) %>% with(surv[strata == 'slope_group=Below Median']) %>% value_to_percent()
+
+val_rfs_by_auc_lowstage_p <- survdiff(
+  Surv(time_to_earliest_failure, failure) ~ auc_group,
+  data = df_airvolume_auc %>%
+    left_join(df_clinical) %>%
+    filter(stage_ajcc7 %in% c('II', 'III'))
+)$pvalue %>% pval_to_string()
+```
+
+
+```{r}
+env_vars <- ls()
+vars_used <- stringr::str_match_all(
+  read_lines('~/Documents/Obsidian/Work\ and\ Life/Notes/Paper\ -\ CBCT-FATE.md'),
+  pattern = '`var:(.*?)`'
+) %>% unlist() %>% unique %>% .[! startsWith(., '`')] %>% .[! startsWith(., 'sf')]
+
+vars_needed <- vars_used %>% .[! (. %in% env_vars)]
+vars_extra <- env_vars %>% .[startsWith(., 'val_')] %>% .[! (. %in% vars_used)]
+
+print(sprintf('%s variables remaining', length(vars_needed)))
+head(vars_needed)
+
+print(sprintf('%s extraneous variables', length(vars_extra)))
+print(vars_extra)
+
+variables_to_export <- env_vars %>% .[startsWith(., 'val_')]
+
+# Make sure no dataframes or lists in the variables
+stopifnot(sum(sapply(mget(variables_to_export), typeof) == 'list') == 0)
+
+write_yaml(mget(variables_to_export), 'variables_cbctfate.yml')
+
+as_tibble(mget(variables_to_export)) %>%
+  gather(variable, value) %>%
+  pander()
+```
+
+
+# Expanded validation cohort
+
+The extended validation cohort features approximately 450 new NPCs treated
+with radical intent. Data extraction remains ongoing for these cases.
+Keeping in mind that some portion of these cases may ultimately not have
+sufficient data for inclusion, we are hopeful for a sizeable validation
+cohort for the above biomarkers, and for further discovery of new potential
+biomarkers.
+
+```{r}
+df_val_clinical <- read_csv('data/clinical/npc_validation_cohort_2022-09-08.csv')
+
+df_val_clinical %>%
+  mutate(
+    stage_t_ajcc7 = case_when(
+      stage_t_ajcc7 %in% c('T1', 'T2') ~ 'T1-2',
+      stage_t_ajcc7 %in% c('T3', 'T4', 'T3 (2)') ~ 'T3-4'
+    ),
+    stage_n_ajcc7 = case_when(
+      stage_n_ajcc7 %in% c('N0') ~ 'N0',
+      stage_n_ajcc7 %in% c('N1', 'N2') ~ 'N1-2',
+      stage_n_ajcc7 %in% c('N3', 'N3a', 'N3b') ~ 'N3',
+    )
+  ) %>%
+  tbl_summary(
+    include = c(
+      'age', 
+      'gender',
+      'stage_t_ajcc7',
+      'stage_n_ajcc7',
+      'chemo_sequence'
+    ),
+    label = list(
+      age ~ 'Age',
+      gender ~ 'Sex',
+      stage_t_ajcc7 ~ 'T category (AJCC7)',
+      stage_n_ajcc7 ~ 'N category (AJCC7)',
+      chemo_sequence ~ 'Chemotherapy'
+    ),
+  )
+
+plotdata_npc_recruitment_by_year <- df_val_clinical %>%
+  filter(ebv_dna == 'Positive') %>%
+  filter(rt_dose == 70) %>%
+  mutate(rt_year = gsub('..-..-(....)', '\\1', rt_start)) %>%
+  filter(rt_year %in% c('2009', '2010', '2011', '2012', '2013', '2014', '2015', '2016'))
+
+plotdata_npc_recruitment_by_year %>%
+  count(rt_year) %>%
+  summarise(mean(n))
+
+p_npc_eligible <- plotdata_npc_recruitment_by_year %>%
+  ggplot(aes(
+    x = rt_year
+  )) +
+  geom_bar() +
+  labs(x = 'Patient count', y = 'Year')
+
+df_val_clinical$mrn %>% unique %>% length()
+```
+
+```{r, eval=F, fig.width=4, fig.height = 4}
+df_clinical_radcure <- read_csv('data/clinical/df_clinical_radcure_opc.csv')
+  
+abridged_table_variables <- c('age_at_dx', 'sex', 'stage_t_ajcc7', 'stage_n_ajcc7', 'rt_regimen')
+array_abridged_table_labels <- list(
+      sex ~ 'Sex',
+      age_at_dx ~ 'Age at diagnosis',
+      stage_t_ajcc7 ~ 'T category',
+      stage_n_ajcc7 ~ 'N category',
+      rt_regimen ~ 'Treatment'
+    )
+df_clinical_radcure %>%
+  mutate(
+    stage_t_ajcc7 = case_when(
+      grepl('T1', stage_t_ajcc7) | grepl('T2', stage_t_ajcc7) ~ 'T1-2',
+      grepl('T3', stage_t_ajcc7) | grepl('T4', stage_t_ajcc7) ~ 'T3-4'
+    ),
+    stage_n_ajcc7 = case_when(
+      grepl('N0', stage_n_ajcc7) ~ 'N0',
+      grepl('N1', stage_n_ajcc7) | grepl('N2', stage_n_ajcc7) ~ 'N1-2',
+      grepl('N3', stage_n_ajcc7) ~ 'N3'
+    )
+  ) %>%
+  tbl_summary(
+    include = all_of(abridged_table_variables),
+    label = array_abridged_table_labels
+  )
+
+plotdata_opc_eligible <- df_clinical_radcure %>%
+  filter(rt_dose == 70, p16_status == 'Positive') %>%
+  mutate(rt_year = gsub('..-..-(....)', '\\1', date_rt_start)) %>%
+  select(rt_year) %>%
+  filter(rt_year %in% c('2009', '2010', '2011', '2012', '2013', '2014', '2015', '2016'))
+
+plotdata_opc_eligible %>% count(rt_year) %>% summarise(mean(n))
+
+p_opc_eligible <- plotdata_opc_eligible %>%
+  ggplot(aes(
+    x = rt_year
+  )) +
+  geom_bar() +
+  labs(x = 'Patient count', y = 'Year')
+
+plot_grid(
+  p_npc_eligible + theme(legend.position = 'none') + ggtitle('NPC'),
+  p_opc_eligible + ggtitle('p16+ OPC'),
+  ncol = 1,
+  align = 'v'
+)
+```
+
+EBV Validation Cohort
+
+```{r}
+df_validation <- read_csv(
+  'data/clinical/npc_validation_cohort_2022-09-08.csv',
+  col_types = cols(
+    date_of_dx = col_date('%m-%d-%Y'),
+    rt_start = col_date('%m-%d-%Y'),
+    rt_end = col_date('%m-%d-%Y'),
+    date_last_fu = col_date('%m-%d-%Y'),
+    date_local_recurrence = col_date('%m-%d-%Y'),
+    date_regional_recurrence = col_date('%m-%d-%Y'),
+    date_distant_recurrence = col_date('%m-%d-%Y')
+  )
+)
+
+df_validation_anthology <- df_validation %>%
+  filter(
+    ebv_dna != 'Not tested',
+    rt_completed == 'Yes'
+    #ecog %in% c('ECOG 0', 'ECOG 1')
+  ) %>%
+  mutate(
+    date_earliest_event = pmin(date_last_fu, date_local_recurrence, date_regional_recurrence, date_distant_recurrence, na.rm = T)
+  )
+
+df_validation_anthology %>%
+  write_csv('data/clinical/npc_mrn_for_ebv_lmp_retrospective_fullclinical.csv')
+  
+df_validation_anthology %>%
+  select(
+    mrn, date_of_dx, rt_start, rt_end, date_earliest_event, date_last_fu
+  ) %>%
+  write_csv('data/clinical/npc_mrn_for_ebv_lmp_retrospective.csv')
+  
+```
+
+
+
+

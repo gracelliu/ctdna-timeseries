@@ -1,0 +1,916 @@
+---
+title: "Exploring CBCT-FATE Data Analysis"
+author: "Grace Liu"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: yes
+    toc_float:
+      collapsed: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r}
+
+library(data.table)
+library(dplyr)
+library(patchwork)
+library(faraway)
+library(ggExtra)
+library(GGally)
+library(ggsci)
+library(ggplot2)
+library(ggpubr)
+library(ggthemr)
+library(gridExtra)
+library(gt)
+library(gtsummary)
+library(rlang)
+library(scales)
+library(survival)
+library(survminer)
+library(readxl)
+library(reshape2)
+library(tidyverse)
+library(rmdformats)
+library(prettydoc)
+library(hrbrthemes)
+library(tint)
+library(tufte)
+
+ggthemr("fresh")
+
+load("/Users/graceliu/bratman/timeseries/data/2024-06-21_head-neck-dataframes.Rdata")
+load('/Users/graceliu/bratman/timeseries/data/HPV_analysis_dataframes.Rdata')
+
+```
+
+
+
+## Data Overview and Familiarization
+
+
+df_cbctfate
+
+```{r}
+
+head(df_cbctfate)
+tail(df_cbctfate)
+dim(df_cbctfate)
+str(df_cbctfate)
+summary(df_cbctfate)
+names(df_cbctfate)
+glimpse(df_cbctfate)
+
+```
+
+
+
+
+```{r include=FALSE}
+
+glimpse(df_cbctfate_auc)
+glimpse(df_cbctfate_smooth)
+glimpse(df_clinical_npc)
+glimpse(df_clinical_opc)
+glimpse(df_clinical_ctdna)
+glimpse(df_ctdna_eqd2)
+glimpse(df_ebv_clinical)
+glimpse(df_gtv_nodes)
+glimpse(df_gtv_primary)
+glimpse(df_hpvseq)
+
+```
+
+
+
+## Plotting Gross Tumour Volume vs Cancer Stage 
+
+
+### Data preprocessing 
+
+```{r}
+
+df_gtv_nodes <- df_gtv_nodes %>% select(-source)
+df_merged_gtv <- left_join(df_gtv_nodes, df_gtv_primary,by="patient")
+
+glimpse(df_merged_gtv)
+
+
+df_volume_vs_stage <- merge(df_clinical_opc, df_merged_gtv, by="patient")
+df_volume_vs_stage <- df_volume_vs_stage %>%
+  select(patient, stage_t_ajcc8, stage_n_ajcc8, stage_ajcc8, gtv_primary, sum_gtv_nodes)
+
+glimpse(df_volume_vs_stage)
+
+```
+
+### Graphing
+
+```{r}
+
+### GTV in Primary vs Stage
+
+p1 <- ggplot(df_volume_vs_stage, aes(x = stage_t_ajcc8, y = gtv_primary)) +
+  geom_boxplot(fill = "pink", color = "black") +
+  labs(x = "Tumor Stage (T)",
+       y = "Gross Tumor Volume in Primary Tumor (cm³)") +
+  stat_compare_means()
+
+p2 <- ggplot(df_volume_vs_stage, aes(x = stage_n_ajcc8, y = gtv_primary)) +
+  geom_boxplot(fill = "palegreen3", color = "black") +
+  labs(x = "Nodal Stage (N)",
+       y = "Gross Tumor Volume in Primary Tumor (cm³)") +
+  stat_compare_means()
+
+p3 <- ggplot(df_volume_vs_stage, aes(x = stage_t_ajcc8, y = gtv_primary)) +
+  geom_boxplot(fill = "lightskyblue2", color = "black") +
+  labs(x = "Overall Stage",
+       y = "Gross Tumor Volume in Primary Tumor (cm³)") +
+  stat_compare_means()
+
+# Combine the plots into one panel
+combined_plot <- (p1 | p2 | p3) + 
+  plot_layout(ncol = 3) +
+  plot_annotation(title = "Gross Tumor Volume in Primary Tumor by different Stages (AJCC8)")
+
+print(combined_plot)
+
+
+### GTV in Nodes vs Stage
+
+p1 <- ggplot(df_volume_vs_stage, aes(x = stage_t_ajcc8, y = sum_gtv_nodes)) +
+  geom_boxplot(fill = "salmon", color = "black") +
+  labs(x = "Tumor Stage (T)",
+       y = "Sum of Gross Tumor Volume in Nodes (cm³)") +
+  stat_compare_means()
+
+p2 <- ggplot(df_volume_vs_stage, aes(x = stage_n_ajcc8, y = sum_gtv_nodes)) +
+  geom_boxplot(fill = "seagreen", color = "black") +
+  labs(x = "Nodal Stage (N)",
+       y = "Sum of Gross Tumor Volume in Nodes (cm³)") +
+  stat_compare_means()
+
+p3 <- ggplot(df_volume_vs_stage, aes(x = stage_ajcc8, y = sum_gtv_nodes)) +
+  geom_boxplot(fill = "steelblue", color = "black") +
+  labs(x = "Overall Stage",
+       y = "Sum of Gross Tumor Volume in Nodes (cm³)") +
+  stat_compare_means()
+
+# Combine the plots into one panel
+combined_plot <- (p1 | p2 | p3) + 
+  plot_layout(ncol = 3) +
+  plot_annotation(title = "Sum of Gross Tumor Volume in Nodes by different Stages (AJCC8)")
+
+print(combined_plot)
+
+
+## Plotting Combined Tumour Volume vs Cancer Stage
+
+# make new column with combined tumor volume 
+df_volume_vs_stage <- df_volume_vs_stage %>%
+  mutate(combined_gtv = gtv_primary + sum_gtv_nodes,
+         combined_gtv_log = log1p(combined_gtv))
+
+glimpse(df_volume_vs_stage)
+
+p1 <- ggplot(df_volume_vs_stage, aes(x = stage_t_ajcc8, y = combined_gtv)) +
+  geom_boxplot(fill = "thistle", color = "black") +
+  labs(x = "Tumor Stage (T)",
+       y = "Combined Tumor Volume (cm³)") +
+  stat_compare_means()
+
+p2 <- ggplot(df_volume_vs_stage, aes(x = stage_n_ajcc8, y = combined_gtv)) +
+  geom_boxplot(fill = "olivedrab3", color = "black") +
+  labs(x = "Nodal Stage (N)",
+       y = "Combined Tumor Volume (cm³)") +
+  stat_compare_means()
+
+p3 <- ggplot(df_volume_vs_stage, aes(x = stage_ajcc8, y = combined_gtv)) +
+  geom_boxplot(fill = "royalblue1", color = "black") +
+  labs(x = "Overall Stage",
+       y = "Combined Tumor Volume (cm³)") +
+  stat_compare_means()
+
+# Combine the plots into one panel
+combined_plot <- (p1 | p2 | p3) + 
+  plot_layout(ncol = 3) +
+  plot_annotation(title = "Combined Tumor Volume by different Stages (AJCC8)")
+
+print(combined_plot)
+
+```
+
+
+ 
+
+
+## Time Series Graphs for cbct_fate 
+
+### Data preperation 
+
+```{r}
+
+# Count occurrences of "x_GTVp_Tracking" in the "Roi" column
+count_x_GTVp_Tracking <- df_cbctfate %>%
+  filter(Roi == "x_GTVp_Tracking") %>%
+  tally()
+
+# Count occurrences of "OPC" in the "cohort" column
+count_OPC <- df_cbctfate %>%
+  filter(cohort == "OPC") %>%
+  tally()
+
+# ROI 
+# Count unique values
+unique_count_roi <- n_distinct(df_cbctfate$Roi, na.rm = TRUE)
+
+# Get unique values
+unique_values_roi <- df_cbctfate %>%
+  distinct(Roi) %>%
+  pull(Roi)
+
+
+# FRACTION 
+# Create a frequency table using dplyr
+freq_frac <- df_cbctfate %>%
+  group_by(fraction) %>%
+  summarise(count = n(), .groups = 'drop')
+
+```
+
+
+
+### GTV over fractions 
+
+```{r}
+
+# Filter for only OPC and Tracking
+df_filtered_gtv <- df_cbctfate_smooth %>%
+  filter(Roi == "x_GTVp_Tracking" & cohort == "OPC")
+
+# Check that it's only what we want
+unique_count_roi <- df_filtered_gtv %>%
+  distinct(Roi) %>% pull(Roi)
+unique_count_cohort <- df_filtered_gtv %>%
+  distinct(cohort) %>% pull(cohort)
+
+# Smoothed Tumor Volume
+ggplot(df_filtered_gtv, aes(x = fraction, y = smoothed, group = Mrn)) +
+  geom_line() +
+  labs(title = "Tracking Tumor Volume Over Fractions",
+       x = "Fraction",
+       y = "Tumor Volume (cm³)")
+
+# Normalized Smoothed Tumor Volume
+ggplot(df_filtered_gtv, aes(x = fraction, y = smoothed_normalized, group = Mrn)) +
+  geom_line() +
+  labs(title = "Tracking Normalized Tumor Volume Over Fractions",
+       x = "Fraction",
+       y = "Tumor Volume Normalized (cm³)")
+
+# Raw Change in Tumor Volume
+ggplot(df_filtered_gtv, aes(x = fraction, y = slope_prenorm, group = Mrn)) +
+  geom_line() +
+  labs(title = "Tracking Change in Tumor Volume Over Fractions",
+       x = "Fraction",
+       y = "Slope")
+
+# Normalized Change in Tumor Volume
+ggplot(df_filtered_gtv, aes(x = fraction, y = slope, group = Mrn)) +
+  geom_line() +
+  labs(title = "Tracking Normalized Change in Tumor Volume Over Fractions",
+       x = "Fraction",
+       y = "Normalized Slope")
+
+# Percent Change in Tumor Volume
+ggplot(df_filtered_gtv, aes(x = fraction, y = percent_vol, group = Mrn)) +
+  geom_line() +
+  labs(title = "Tracking Percent Change in Tumor Volume Over Fractions",
+       x = "Fraction",
+       y = "Percent Change in Tumor Volume")
+
+# Calculate the overall change and classify as positive or negative
+overall_change_df <- df_filtered_gtv %>%
+  group_by(Mrn) %>%
+  summarise(overall_change = ifelse(smoothed[fraction == 35] > smoothed[fraction == 1], "positive", "negative"))
+
+# Join the overall change classification back to the original dataframe
+df_filtered_gtv <- df_filtered_gtv %>%
+  left_join(overall_change_df, by = "Mrn")
+
+# Create the plot with lines colored based on overall change
+ggplot(df_filtered_gtv, aes(x = fraction, y = percent_vol, group = Mrn, color = overall_change)) +
+  geom_line(size = 0.2) +
+  scale_color_manual(values = c( "negative" = "lightcoral", "positive" = "seagreen")) +
+  labs(title = "Tracking Percent Change in Tumor Volume Over Fractions",
+       x = "Fraction",
+       y = "Percent Change in Tumor Volume",
+       color = "Overall Change")
+
+# Calculate the average lines for positive and negative changes
+average_lines <- df_filtered_gtv %>%
+  group_by(fraction, overall_change) %>%
+  summarise(avg_percent_vol = mean(percent_vol, na.rm = TRUE)) %>%
+  ungroup()
+
+# Create the plot with lighter individual lines and thicker average lines
+ggplot() +
+  # Lighter individual lines
+  geom_line(data = df_filtered_gtv, aes(x = fraction, y = percent_vol, group = Mrn, color = overall_change), alpha = 0.3) +
+  # Thicker average lines
+  geom_line(data = average_lines, aes(x = fraction, y = avg_percent_vol, color = overall_change), size = 1.2) +
+  scale_color_manual(values = c("positive" = "seagreen", "negative" = "lightcoral")) +
+  labs(title = "Tracking Percent Change in Tumor Volume Over Fractions",
+       x = "Fraction",
+       y = "Percent Change in Tumor Volume",
+       color = "Overall Change")
+
+```
+
+
+
+### Air volume over fractions 
+
+```{r}
+
+# Filter for only OPC and Air Expanded 
+df_filtered_air <- df_cbctfate_smooth %>%
+  filter(Roi == "x_Air_GTVp_Expanded05" & cohort == "OPC")
+
+# Check that it's only what we want
+unique_count_roi <- df_filtered_air %>%
+  distinct(Roi) %>% pull(Roi)
+unique_count_cohort <- df_filtered_air %>%
+  distinct(cohort) %>% pull(cohort)
+
+# Smoothed Air Volume
+ggplot(df_filtered_air, aes(x = fraction, y = smoothed, group = Mrn)) +
+  geom_line() +
+  labs(title = "Tracking Air Volume Over Fractions",
+       x = "Fraction",
+       y = "Air Volume (cm³)")
+
+# Normalized Smoothed Air Volume
+ggplot(df_filtered_air, aes(x = fraction, y = smoothed_normalized, group = Mrn)) +
+  geom_line() +
+  labs(title = "Tracking Normalized Air Volume Over Fractions",
+       x = "Fraction",
+       y = "Air Volume Normalized (cm³)")
+
+# Raw Change in Air Volume
+ggplot(df_filtered_air, aes(x = fraction, y = slope_prenorm, group = Mrn)) +
+  geom_line() +
+  labs(title = "Tracking Change in Air Volume Over Fractions",
+       x = "Fraction",
+       y = "Slope")
+
+# Normalized Change in Air Volume
+ggplot(df_filtered_air, aes(x = fraction, y = slope, group = Mrn)) +
+  geom_line() +
+  labs(title = "Tracking Normalized Change in Air Volume Over Fractions",
+       x = "Fraction",
+       y = "Normalized Slope")
+
+# Percent Change in Air Volume
+ggplot(df_filtered_air, aes(x = fraction, y = percent_vol, group = Mrn)) +
+  geom_line() +
+  labs(title = "Tracking Percent Change in Air Volume Over Fractions",
+       x = "Fraction",
+       y = "Percent Change in Air Volume")
+
+# Calculate the overall change and classify as positive or negative
+overall_change_df <- df_filtered_air %>%
+  group_by(Mrn) %>%
+  summarise(overall_change = ifelse(smoothed[fraction == 35] > smoothed[fraction == 1], "positive", "negative"))
+
+# Join the overall change classification back to the original dataframe
+df_filtered_air <- df_filtered_air %>%
+  left_join(overall_change_df, by = "Mrn")
+
+# Create the plot with lines colored based on overall change
+ggplot(df_filtered_air, aes(x = fraction, y = percent_vol, group = Mrn, color = overall_change)) +
+  geom_line(size = 0.2) +
+  scale_color_manual(values = c( "negative" = "lightcoral", "positive" = "seagreen")) +
+  labs(title = "Tracking Percent Change in Air Volume Over Fractions",
+       x = "Fraction",
+       y = "Percent Change in Air Volume",
+       color = "Overall Change")
+
+# Calculate the average lines for positive and negative changes
+average_lines <- df_filtered_air %>%
+  group_by(fraction, overall_change) %>%
+  summarise(avg_percent_vol = mean(percent_vol, na.rm = TRUE)) %>%
+  ungroup()
+
+# Create the plot with lighter individual lines and thicker average lines
+ggplot() +
+  # Lighter individual lines
+  geom_line(data = df_filtered_air, aes(x = fraction, y = percent_vol, group = Mrn, color = overall_change), alpha = 0.3) +
+  # Thicker average lines
+  geom_line(data = average_lines, aes(x = fraction, y = avg_percent_vol, color = overall_change), size = 1.2) +
+  scale_color_manual(values = c("positive" = "seagreen", "negative" = "lightcoral")) +
+  labs(title = "Tracking Percent Change in Air Volume Over Fractions",
+       x = "Fraction",
+       y = "Percent Change in Air Volume",
+       color = "Overall Change")
+
+```
+
+
+
+
+## HPV Blood Concentrations 
+
+
+### Data preprocessing
+
+```{r}
+
+unique_values_hpvseq_timepoints <- df_hpvseq %>% distinct(timepoint) %>% pull(timepoint)
+unique_values_hpvseq_timepoints
+
+# Select columns in df_hpvseq and df_clinical_opc + merge to create new df_hpv_conc
+df_hpv_conc <- merge((df_hpvseq %>% select(patient, seq_copies_mL, dPCR_copies_mL_average, timepoint)), (df_clinical_opc %>% select(patient, stage_t_ajcc8, stage_n_ajcc8, stage_ajcc8))) %>%
+  mutate(seq_copies_mL_log = log1p(seq_copies_mL)) %>%
+  mutate(dPCR_copies_mL_average_log = log1p(dPCR_copies_mL_average))
+
+# Filter for only baseline 
+df_baseline <- df_hpv_conc %>%
+  filter(timepoint == "Baseline")
+
+# Filter for only Early RT
+df_early_rt <- df_hpv_conc %>%
+  filter(timepoint == "Early RT")
+
+# Filter for only Mid RT 
+df_mid_rt <- df_hpv_conc %>%
+  filter(timepoint == "Mid RT")
+
+# Filter for only 3 Months 
+df_3_month <- df_hpv_conc %>%
+  filter(timepoint == "3 months")
+
+```
+
+
+
+### Graph HPV Sequence Copies by Stage (AJCC8)
+
+```{r}
+
+#### Baseline
+
+# Sequence copies by T Stage 
+g1 <- ggplot(df_baseline, aes(x = stage_t_ajcc8, y = seq_copies_mL_log)) +
+  geom_boxplot(fill="antiquewhite4") +
+  labs(x = "Tumor Stage (T)",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+# Sequence copies by N Stage 
+g2 <- ggplot(df_baseline, aes(x = stage_n_ajcc8, y = seq_copies_mL_log)) +
+  geom_boxplot(fill="antiquewhite4") +
+  labs(x = "Nodal Stage (N)",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+# Sequence copies by Overall Stage
+g3 <- ggplot(df_baseline, aes(x = stage_ajcc8, y = seq_copies_mL_log)) +
+  geom_boxplot(fill="antiquewhite4") +
+  labs(x = "Overall Stage",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+combined_plot <- (g1 | g2 | g3) + 
+  plot_layout(ncol = 3) +
+  plot_annotation(title = "HPV Sequence Copies by different Stages (Baseline)")
+
+print(combined_plot)
+
+
+#### Early RT
+
+# Sequence copies by T Stage 
+g1 <- ggplot(df_early_rt, aes(x = stage_t_ajcc8, y = seq_copies_mL_log)) +
+  geom_boxplot(fill="antiquewhite3") +
+  labs(x = "Tumor Stage (T)",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+# Sequence copies by N Stage
+g2 <- ggplot(df_early_rt, aes(x = stage_n_ajcc8, y = seq_copies_mL_log)) +
+  geom_boxplot(fill="antiquewhite3") +
+  labs(x = "Nodal Stage (N)",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+# Sequence copies by Overall Stage 
+g3 <- ggplot(df_early_rt, aes(x = stage_ajcc8, y = seq_copies_mL_log)) +
+  geom_boxplot(fill="antiquewhite3") +
+  labs(x = "Overall Stage",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+combined_plot <- (g1 | g2 | g3) + 
+  plot_layout(ncol = 3) +
+  plot_annotation(title = "HPV Sequence Copies by different Stages (Early RT)")
+
+print(combined_plot)
+
+
+#### Mid RT
+
+# Sequence copies by T Stage 
+g1 <- ggplot(df_mid_rt, aes(x = stage_t_ajcc8, y = seq_copies_mL_log)) +
+  geom_boxplot(fill="antiquewhite2") +
+  labs(x = "Tumor Stage (T)",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+# Sequence copies by N Stage 
+g2 <- ggplot(df_mid_rt, aes(x = stage_n_ajcc8, y = seq_copies_mL_log)) +
+  geom_boxplot(fill="antiquewhite2") +
+  labs(x = "Nodal Stage (N)",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+#Sequence copies by Overall Stage 
+g3 <- ggplot(df_mid_rt, aes(x = stage_ajcc8, y = seq_copies_mL_log)) +
+  geom_boxplot(fill="antiquewhite2") +
+  labs(x = "Overall Stage",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+combined_plot <- (g1 | g2 | g3) + 
+  plot_layout(ncol = 3) +
+  plot_annotation(title = "HPV Sequence Copies by different Stages (Mid RT)")
+
+print(combined_plot)
+
+
+#### 3 Months Post-RT 
+
+# Sequence copies by T Stage 
+g1 <- ggplot(df_3_month, aes(x = stage_t_ajcc8, y = seq_copies_mL_log)) +
+  geom_boxplot(fill="antiquewhite1") +
+  labs(title = "HPV Sequence Copies by Tumor Stage (3 Months Post-RT)",
+       x = "Tumor Stage (T)",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+# Sequence copies by N Stage 
+g2 <- ggplot(df_3_month, aes(x = stage_n_ajcc8, y = seq_copies_mL_log)) +
+  geom_boxplot(fill="antiquewhite1") +
+  labs(title = "HPV Sequence Copies by Nodal Stage (3 Months Post-RT)",
+       x = "Nodal Stage (N)",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+# Sequence copies by Overall Stage 
+g3 <- ggplot(df_3_month, aes(x = stage_ajcc8, y = seq_copies_mL_log)) +
+  geom_boxplot(fill="antiquewhite1") +
+  labs(title = "HPV Sequence Copies by Overall Stage (3 Months Post-RT)",
+       x = "Overall Stage",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+combined_plot <- (g1 | g2 | g3) + 
+  plot_layout(ncol = 3) +
+  plot_annotation(title = "HPV Sequence Copies by different Stages (3 Months Post-RT)")
+
+print(combined_plot)
+
+```
+
+
+
+### Graph dPCR Copies by Stage (AJCC8)
+
+
+```{r}
+
+#### Baseline
+
+# dPCR copies by T Stage 
+g1 <- ggplot(df_baseline, aes(x = stage_t_ajcc8, y = dPCR_copies_mL_average_log)) +
+  geom_boxplot(fill="burlywood3") +
+  labs(x = "Tumor Stage (T)",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+# dPCR copies by N Stage 
+g2 <- ggplot(df_baseline, aes(x = stage_n_ajcc8, y = dPCR_copies_mL_average_log)) +
+  geom_boxplot(fill="burlywood3") +
+  labs(x = "Nodal Stage (N)",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+# dPCR copies by Overall Stage 
+g3 <- ggplot(df_baseline, aes(x = stage_ajcc8, y = dPCR_copies_mL_average_log)) +
+  geom_boxplot(fill="burlywood3") +
+  labs(x = "Overall Stage",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+combined_plot <- (g1 | g2 | g3) + 
+  plot_layout(ncol = 3) +
+  plot_annotation(title = "HPV dPCR Copies by different Stages (Baseline)")
+
+print(combined_plot)
+
+
+#### Early RT
+
+# dPCR copies by T Stage 
+g1 <- ggplot(df_early_rt, aes(x = stage_t_ajcc8, y = dPCR_copies_mL_average_log)) +
+  geom_boxplot(fill="burlywood2") +
+  labs(x = "Tumor Stage (T)",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+# dPCR copies by N Stage 
+g2 <- ggplot(df_early_rt, aes(x = stage_n_ajcc8, y = dPCR_copies_mL_average_log)) +
+  geom_boxplot(fill="burlywood2") +
+  labs(x = "Nodal Stage (N)",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+# dPCR copies by Overall Stage 
+g3 <- ggplot(df_early_rt, aes(x = stage_ajcc8, y = dPCR_copies_mL_average_log)) +
+  geom_boxplot(fill="burlywood2") +
+  labs(x = "Overall Stage",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+combined_plot <- (g1 | g2 | g3) + 
+  plot_layout(ncol = 3) +
+  plot_annotation(title = "HPV dPCR Copies by different Stages (Early RT)")
+
+print(combined_plot)
+
+
+#### Mid RT
+
+# dPCR copies by T Stage 
+g1 <- ggplot(df_mid_rt, aes(x = stage_t_ajcc8, y = dPCR_copies_mL_average_log)) +
+  geom_boxplot(fill="burlywood1") +
+  labs(x = "Tumor Stage (T)",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+# dPCR copies by N Stage 
+g2 <- ggplot(df_mid_rt, aes(x = stage_n_ajcc8, y = dPCR_copies_mL_average_log)) +
+  geom_boxplot(fill="burlywood1") +
+  labs(x = "Nodal Stage (N)",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+# dPCR copies by Overall Stage 
+g3 <- ggplot(df_mid_rt, aes(x = stage_ajcc8, y = dPCR_copies_mL_average_log)) +
+  geom_boxplot(fill="burlywood1") +
+  labs(x = "Overall Stage",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+combined_plot <- (g1 | g2 | g3) + 
+  plot_layout(ncol = 3) +
+  plot_annotation(title = "HPV dPCR Copies by different Stages (Mid RT)")
+
+print(combined_plot)
+
+
+#### 3 Months after RT 
+
+# dPCR copies by T Stage 
+g1 <- ggplot(df_3_month, aes(x = stage_t_ajcc8, y = dPCR_copies_mL_average_log)) +
+  geom_boxplot(fill="burlywood1") +
+  labs(x = "Tumor Stage (T)",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+# dPCR copies by N Stage 
+g2 <- ggplot(df_3_month, aes(x = stage_n_ajcc8, y = dPCR_copies_mL_average_log)) +
+  geom_boxplot(fill="burlywood1") +
+  labs(x = "Nodal Stage (N)",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+# dPCR copies by Overall Stage 
+g3 <- ggplot(df_3_month, aes(x = stage_ajcc8, y = dPCR_copies_mL_average_log)) +
+  geom_boxplot(fill="burlywood1") +
+  labs(x = "Overall Stage",
+       y = "HPV Sequence Copies (count per mL)") +
+  stat_compare_means()
+
+combined_plot <- (g1 | g2 | g3) + 
+  plot_layout(ncol = 3) +
+  plot_annotation(title = "HPV dPCR Copies by different Stages (3 Months Post-RT)")
+
+print(combined_plot)
+
+```
+
+
+
+### Graph Correlation between seq_copies_mL and dPCR_copies_mL_average ( using ggpairs() )
+
+```{r}
+
+df_gg_baseline <- df_baseline %>% select(seq_copies_mL_log, dPCR_copies_mL_average_log)
+ggpairs(df_gg_baseline, title = "Baseline")
+
+df_gg_early <- df_early_rt %>% select(seq_copies_mL_log, dPCR_copies_mL_average_log)
+ggpairs(df_gg_early, title = "Early RT")
+
+df_gg_mid <- df_mid_rt %>% select(seq_copies_mL_log, dPCR_copies_mL_average_log)
+ggpairs(df_gg_mid, title = "Mid RT")
+
+df_gg_3_month <- df_3_month %>% select(seq_copies_mL_log, dPCR_copies_mL_average_log)
+ggpairs(df_gg_3_month, title = "3 Months Post-RT")
+
+```
+
+
+
+
+
+### HPV Seq Copies over time
+
+```{r}
+
+# Order timepoints
+df_hpv_conc$timepoint <- factor(df_hpv_conc$timepoint, levels = c("Baseline", "Early RT", "Mid RT", "3 months"))
+
+ggplot(df_hpv_conc, aes(x = timepoint, y = seq_copies_mL_log, group = patient)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "HPV Sequence Copies Over Time",
+       x = "Timepoint",
+       y = "HPV Sequence Copies (count per mL)")
+
+```
+
+
+### Change in HPV Seq Copies over time
+
+```{r}
+
+df_baseline <- df_baseline %>%
+  select(patient, baseline_seq_copies = seq_copies_mL_log)
+
+df_hpv_conc <- df_hpv_conc %>%
+  left_join(df_baseline, by = "patient")
+
+# Calculate the percent change relative to the baseline
+df_hpv_conc <- df_hpv_conc %>%
+  mutate(percentchange_seq_copies = 100 * (seq_copies_mL_log) / baseline_seq_copies)
+
+# Filter out rows where the baseline value is NA
+df_hpv_conc <- df_hpv_conc %>%
+  filter(!is.na(baseline_seq_copies))
+
+ggplot(df_hpv_conc, aes(x = timepoint, y = percentchange_seq_copies, group = patient)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Percent Change in HPV Sequence Copies Over Time",
+       x = "Timepoint",
+       y = "Percent Change in HPV Sequence Copies")
+
+```
+
+
+
+```{r}
+
+# Step 1: Ensure unique Mrn in df_filtered
+df_filtered_unique <- df_filtered_air %>%
+  select(Mrn, overall_change) %>%
+  distinct(Mrn, .keep_all = TRUE)
+
+# Step 2: Join df_clinical_opc and df_filtered_unique
+df_mrn_merge <- df_clinical_opc %>%
+  select(Mrn, patient) %>%
+  left_join(df_filtered_unique, by = "Mrn")
+
+# Step 3: Merge df_mrn_merge with df_hpv_conc
+df_hpv_conc <- df_hpv_conc %>%
+  left_join(df_mrn_merge, by = "patient")
+
+average_lines <- df_hpv_conc %>%
+  group_by(timepoint, overall_change) %>%
+  summarise(avg_percentchange_seq_copies = mean(percentchange_seq_copies, na.rm = TRUE)) %>%
+  ungroup()
+
+# Create the plot with lighter individual lines and thicker average lines
+ggplot() +
+  # Lighter individual lines
+  geom_line(data = df_hpv_conc, aes(x = timepoint, y = percentchange_seq_copies, group = patient, color = overall_change), alpha = 0.3) +
+  # Thicker average lines
+  geom_line(data = average_lines, aes(x = timepoint, y = avg_percentchange_seq_copies, color = overall_change), size = 1.2) +
+  scale_color_manual(values = c("positive" = "seagreen", "negative" = "lightcoral")) +
+  labs(title = "Percent Change in HPV Sequence Copies Over Time",
+       x = "Timepoint",
+       y = "Percent Change in HPV Sequence Copies",
+       color = "Overall Change")
+
+
+######## I filtered out the ones with Overall Change == NA 
+
+df_hpv_conc_graph <- df_hpv_conc %>% filter(!is.na(overall_change))
+
+# calculate average lines 
+average_lines <- df_hpv_conc_graph %>%
+  group_by(timepoint, overall_change) %>%
+  summarise(avg_percent_change = mean(percentchange_seq_copies, na.rm = TRUE)) %>%
+  ungroup()
+
+# Create the plot with lighter individual lines and thicker average lines
+ggplot() +
+  # Lighter individual lines
+  geom_line(data = df_hpv_conc_graph, aes(x = timepoint, y = percentchange_seq_copies, group = patient, color = overall_change), alpha = 0.3) +
+  # Thicker average lines
+  geom_line(data = average_lines, aes(x = timepoint, y = avg_percent_change, color = overall_change), size = 4) +
+  scale_color_manual(values = c("positive" = "seagreen", "negative" = "lightcoral")) +
+  labs(title = "Percent Change in HPV Sequence Copies Over Time",
+       x = "Timepoint",
+       y = "Percent Change in HPV Sequence Copies",
+       color = "Overall Change") + facet_wrap(~overall_change)
+
+```
+
+
+```{r}
+
+
+```
+
+```{r}
+
+
+```
+
+
+```{r}
+
+
+```
+
+
+```{r}
+
+
+```
+
+
+
+
+```{r}
+
+
+```
+
+
+
+
+
+
+```{r}
+
+
+```
+
+
+
+
+
+
+```{r}
+
+
+```
+
+
+
+```{r}
+
+
+```
+
+
+
+```{r}
+
+
+```
+
+
+
+
+```{r}
+
+
+```

@@ -1,0 +1,4692 @@
+---
+title: "Head Neck HPV"
+author: "Eric Zhao"
+date: "27/01/2022"
+output:
+  rmdformats::readthedown:
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: false
+    highlight: tango
+    toc_depth: 3
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+This report describes the analysis of HPV-positive head & neck cancers
+characterized by ctDNA and radiomic imaging biomarkers.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.path = 'figures/', dev=c('png', 'svg', 'pdf'))
+
+##################
+# Load Libraries #
+##################
+
+library(viridis)
+library(ggsci)
+library(umap)
+library(zoo)
+library(survival)
+library(survminer)
+library(lubridate)
+library(gtsummary)
+library(GGally)
+library(ggdendro)
+library(cowplot)
+library(forestmodel)
+library(ggthemr)
+library(ggbeeswarm)
+library(ggsignif)
+library(glmnet)
+library(pander)
+Sys.setenv(CMDSTANR_NO_VER_CHECK=TRUE)
+library(cmdstanr)
+library(posterior)
+library(brms)
+library(ggrepel)
+library(ggupset)
+library(lme4)
+library(tidyverse)
+library(tidybayes)
+library(ggdist)
+library(ggsignif)
+library(abind)
+library(modelr)
+library(arrow)
+library(powerSurvEpi)
+library(GLMMadaptive)
+library(JMbayes2)
+library(splines2)
+library(yaml)
+library(flextable)
+library(rootSolve)
+library(lmtest)
+library(nonnestcox)
+library(png)
+library(grid)
+library(ggridges)
+source('/Users/graceliu/bratman/src/hpv_dna_functions.R')
+source('/Users/graceliu/bratman/src/summary_functions.R')
+
+####################
+# Set some options #
+####################
+
+ggthemr(
+  palette = 'dust'
+)
+
+panderOptions('table.style', 'rmarkdown')
+panderOptions('table.split.table', 1000)
+panderOptions('digits', 2)
+
+set.seed(142)
+
+tables <- list()
+
+load('/Users/graceliu/bratman/HPV_analysis_dataframes.Rdata')
+# df_clinical_ctdna$surv_progression = as.character(df_clinical_ctdna$surv_progression)
+# df_clinical_ctdna$surv_recurrence = as.character(df_clinical_ctdna$surv_recurrence)
+# df_clinical_ctdna$surv_overall = as.character(df_clinical_ctdna$surv_overall)
+# library(readr)
+# write_tsv(df_clinical_ctdna,"test.tsv")
+```
+
+```{r load_data, include=FALSE, eval=FALSE}
+###################
+# Read ctDNA data #
+###################
+
+df_ctdna_wide <- read_csv(
+  'data/clinical/clinical_opc_ctdna.csv',
+  col_select = c('patient', 'ctdna_baseline', 'ctdna_earlyrt', 'ctdna_midrt', 'ctdna_3months')
+) %>%
+  filter(!is.na(ctdna_baseline))
+
+df_ctdna <- df_ctdna_wide %>%
+  gather(timepoint, ctdna, -patient) %>%
+  mutate(
+    timepoint = case_when(
+      timepoint == 'ctdna_baseline' ~ 'Baseline',
+      timepoint == 'ctdna_earlyrt' ~ 'Early RT',
+      timepoint == 'ctdna_midrt' ~ 'Mid RT',
+      timepoint == 'ctdna_3months' ~ '3 months'
+    ) %>% factor(levels = c('Baseline', 'Early RT', 'Mid RT', '3 months'))
+  ) %>%
+  filter(!is.na(ctdna))
+
+# ------------------------ #
+# HPV DNA collection dates #
+# ------------------------ #
+
+df_ctdna_collectiondates <- read_csv(
+  'data/clinical/opc_ctdna_collection dates.csv',
+  )
+
+###############################
+# Read clinical outcomes data #
+###############################
+
+df_clinical_outcomes_update_2022_09_08 <- read_csv(
+  'data/clinical/opc_cohort_outcomes_update_2022-09-08.csv',
+  col_types = cols(
+    'mrn' = col_integer(),
+    'date_of_dx' = col_date('%m-%d-%Y'),
+    'date_local_failure' = col_date('%m-%d-%Y'),
+    'date_regional_failure' = col_date('%m-%d-%Y'),
+    'date_distant_failure' = col_date('%m-%d-%Y'),
+    'date_last_followup' = col_date('%m-%d-%Y')
+  )
+)
+
+# We start from the first version of the anthology,
+# and then join in the updated survival data
+
+df_clinical_ctdna <- read_csv(
+  'data/clinical/data_clinical_opc_ctdna_anthology.csv',
+  col_types = cols(
+    'mrn' = col_integer(),
+    'date_rt_start' = col_date('%m-%d-%Y'),
+    'date_rt_end' = col_date('%m-%d-%Y'),
+    'rt_fractions' = col_integer(),
+  )
+) %>%
+  select(
+    -date_of_dx,
+    -date_last_followup,
+    -vital_status,
+    -cause_of_death,
+    -local_failure,
+    -date_local_failure,
+    -regional_failure,
+    -date_regional_failure, 
+    -distant_failure,
+    -date_distant_failure,
+  ) %>%
+  inner_join(df_clinical_outcomes_update_2022_09_08, by = 'mrn') %>%
+  mutate(patient = paste0('HN', patient)) %>%
+  left_join(
+    read_csv('data/clinical/clinical_opc_ctdna.csv') %>%
+      distinct(patient, cohort) %>%
+      mutate(cohort = if_else(cohort == 'P', 'Pilot', 'Validation'))
+  ) %>%
+  filter(patient %in% df_ctdna$patient) %>%
+  mutate(
+    dose_fractionation = paste(rt_dose, rt_fractions, sep='/'),
+    
+    local_failure = grepl('yes', tolower(local_failure)),
+    regional_failure = grepl('yes', tolower(regional_failure)),
+    distant_failure = grepl('yes', tolower(distant_failure)),
+    
+    recurrence = local_failure | regional_failure | distant_failure,
+    date_recurrence = if_else(is.na(date_local_failure) & is.na(date_regional_failure) & is.na(date_distant_failure), date_last_followup, pmin(date_local_failure, date_regional_failure, date_distant_failure, na.rm=T)),
+    time_to_recurrence = interval(date_rt_start, date_recurrence) %/% days(1) / (365/12),
+    surv_recurrence = Surv(time_to_recurrence, recurrence),
+    
+    death = vital_status == 'Dead',
+    time_to_death = interval(date_of_dx, date_last_followup) %/% days(1) / (365/12),
+    surv_overall = Surv(time_to_death, death),
+    
+    progression = recurrence | death,
+    date_progression = if_else(recurrence, date_recurrence, date_last_followup),
+    time_to_progression = interval(date_of_dx, date_progression) %/% days(1) / (365/12),
+    surv_progression = Surv(time_to_progression, progression),
+    
+    rt_prescription = if_else(rt_prescription == '70/.5f/7w, QD, RT+IO', '70/35f/7w, QD, RT+IO', rt_prescription)
+  ) %>%
+  select(patient, everything()) %>%
+  mutate(
+    cause_of_death = case_when(
+      grepl('Index', cause_of_death) ~ 'Index Cancer',
+      grepl('Other Cancer', cause_of_death) ~ 'Other Cancer',
+      grepl('Other Cause', cause_of_death) ~ 'Other Cause',
+      TRUE ~ cause_of_death
+    ),
+    stage_t_ajcc8 = factor(stage_t_ajcc8, levels = c('T1', 'T2', 'T3', 'T4')),
+    stage_n_ajcc8 = factor(stage_n_ajcc8, levels = c('N0', 'N1', 'N2', 'N3')),
+    stage_ajcc8 = factor(stage_ajcc8, levels = c('I', 'II', 'III')),
+    smoking_status = factor(smoking_status, levels = c('Non-smoker', 'Ex-smoker', 'Current')),
+    drinking_status = factor(drinking_status, levels = c('non-drinker', 'ex-drinker', 'light', 'Moderate', 'heavy')),
+    sex = factor(sex, levels = c('Male', 'Female')),
+    ecog = gsub('ECOG ', '', ecog) %>% as.integer
+  )
+
+# Exclusions due to surgery
+
+df_surgery <- read_csv("data/clinical/Anth update Nov 3'2022 -SVB-OPC ctDNA cohort-Huang.csv") %>%
+  mutate(
+    tors = grepl('FIND', `Tx Intent`),
+    tonsillectomy = !is.na(`Date of Tonsillectomy`)
+  ) %>%
+  filter(tors | tonsillectomy) %>%
+  select(
+    mrn = MRN,
+    date_surgery = `Date of Tonsillectomy`,
+    tors,
+    tonsillectomy
+) %>%
+  mutate(
+    mrn = as.integer(mrn),
+    surgery = TRUE
+  ) %>%
+  arrange(date_surgery) %>%
+  left_join(df_clinical_ctdna %>% select(mrn, patient)) %>%
+  select(patient, mrn, everything())
+
+# Exclude all TORS cases, plus HN2862 which had an upfront LN surgery, and HN2516 which had pre-tonsillectomy mucosal lesion that was completely resected.
+df_exclude_for_surgery <- bind_rows(
+  df_surgery %>% filter(tors) %>% select(patient),
+  tibble(patient = c('HN2516', 'HN2862'))
+) %>%
+  distinct()
+
+# Exclude all cases with undetectable baseline or missing timepoint.
+df_exclude_for_no_hpv <- df_ctdna %>%
+  filter(timepoint == 'Baseline', ctdna == 0) %>%
+  distinct(patient)
+
+# All excluded patients
+df_exclude <- df_exclude_for_surgery %>%
+  mutate(reason = 'Surgery') %>% 
+  bind_rows(
+    df_exclude_for_no_hpv %>%
+      mutate(reason = 'Undetectable HPV')
+  )
+
+## Table of only patients included
+
+df_ctdna_clinical <- df_ctdna %>%
+  spread(timepoint, ctdna) %>%
+  left_join(df_clinical_ctdna) %>%
+  mutate(
+    followup_detectable = `3 months` > 0,
+    clearance = `3 months` == 0
+  ) %>%
+  filter(! patient %in% df_exclude$patient)
+
+###########################################
+# Read Clinical Data for RADCURE patients #
+###########################################
+
+df_clinical_radcure <- read_csv(
+  'data/clinical/data_clinical_radcure_opc.csv',
+  col_types = cols(
+    date_of_dx = col_date(format = '%m-%d-%Y'),
+    date_rt_start = col_date(format = '%m-%d-%Y'),
+    date_rt_end = col_date(format = '%m-%d-%Y'),
+    date_last_fu = col_date(format = '%m-%d-%Y'),
+    date_local_failure = col_date(format = '%m-%d-%Y'),
+    date_regional_failure = col_date(format = '%m-%d-%Y'),
+    date_distant_failure = col_date(format = '%m-%d-%Y'),
+  )
+) %>%
+  arrange(date_rt_start) %>%
+  mutate(
+    local_failure = grepl('yes', tolower(local_failure)),
+    regional_failure = grepl('yes', tolower(regional_failure)),
+    distant_failure = grepl('yes', tolower(distant_failure)),
+    recurrence = local_failure | regional_failure | distant_failure,
+    date_recurrence = pmin(date_local_failure, date_regional_failure, date_distant_failure, na.rm=T)
+  )
+
+###############################
+# Read Imaging Data - RADCURE #
+###############################
+
+df_pyradiomics <- read_tsv('data/imaging/opc_ctdna_pyradiomics.txt', col_types = cols(MRN = col_integer())) %>%
+  dplyr::rename(mrn = MRN) %>%
+  select(-patient) %>%
+  inner_join(df_clinical_ctdna %>% select(patient, mrn)) %>%
+  select(patient, everything())
+
+df_radiomics_fourfeature <- read_csv('data/imaging/opc_radiomics_4features.csv') %>%
+  rename(mrn = MRN) %>%
+  inner_join(df_clinical_ctdna %>% select(patient, mrn)) %>%
+  select(patient, everything())
+
+df_radiomics_ln <- read_csv(
+  'data/imaging/radcure_opc_LNs2.csv',
+  col_select = c('MRN', 'LN_idx', 'original_shape_VoxelVolume')
+  ) %>%
+  mutate(
+    feature = 'original_shape_VoxelVolume'
+  ) %>%
+  dplyr::rename(
+    value = original_shape_VoxelVolume,
+    mrn = MRN,
+  ) %>%
+  left_join(df_clinical_ctdna %>% select(mrn, patient)) %>%
+  select(patient, everything())
+
+############################
+# Read Imaging Data - MIRA #
+############################
+
+cols_dvh_export <- c(
+  "Mrn",
+  "ROI",
+  "Canonical ROI",
+  "Plan",
+  "Planning Exam Time", 
+  "Planning Volume [cc]",
+  "Dose Grid Volume [cc]"
+)
+
+df_gtv_dvh_2_raw <- read_csv(
+  'data/imaging/HN OPC HPV ctDNA - RS - DVH Export.csv',
+  col_select = all_of(cols_dvh_export),
+  col_types = cols(
+      `Planning Exam Time` = col_datetime('%Y-%m-%dT%H:%M:%S'),
+      `Planning Volume [cc]` = col_double()
+    )
+  ) %>%
+  rename(mrn = Mrn)
+
+df_gtv_dvh_3_raw <- read_csv(
+  'data/imaging/HN OPC HPV ctDNA - Pinnacle - DVH Export Part 2.csv',
+  col_select = all_of(cols_dvh_export),
+  col_types = cols(
+    `Planning Exam Time` = col_datetime('%Y-%m-%dT%H:%M:%S'), 
+    `Planning Volume [cc]` = col_double()
+  )
+) %>%
+  rename(mrn = Mrn) %>%
+  filter(
+    grepl('GTV', ROI) | grepl('[RL]\\d', ROI),
+    !grepl('CTV', ROI),
+    !grepl('PTV', ROI)
+  ) %>%
+  mutate(
+    group = if_else(grepl('GTV', ROI), 'GTVp', 'GTVn')
+  ) %>%
+  group_by(mrn) %>%
+  filter(`Planning Exam Time` == min(`Planning Exam Time`)) %>%
+  ungroup()
+
+####################################################
+# Process Imaging data into a single unified table #
+####################################################
+
+df_gtv_dvh_3_primary <- df_gtv_dvh_3_raw %>%
+  filter(group == 'GTVp') %>%
+  group_by(mrn, ROI) %>%
+  summarise(
+    `Dose Grid Volume [cc]` = unique(`Dose Grid Volume [cc]`),
+    `Planning Exam Time` = unique(`Planning Exam Time`)
+  ) %>%
+  ungroup() %>%
+  group_by(mrn) %>%
+  summarise(
+    `Dose Grid Volume [cc]` = sum(`Dose Grid Volume [cc]`),
+    ROI = paste(ROI, collapse = '+'),
+    `Planning Exam Time` = unique(`Planning Exam Time`)
+  ) %>%
+  ungroup() %>%
+  mutate(ROI = 'GTVp')
+
+df_gtv_dvh_3 <- df_gtv_dvh_3_raw %>%
+  filter(group == 'GTVn') %>%
+  mutate(ROI = paste('GTVn', ROI, sep='_')) %>%
+  select(mrn, ROI, `Dose Grid Volume [cc]`, `Planning Exam Time`) %>%
+  bind_rows(df_gtv_dvh_3_primary)
+
+df_gtv <- bind_rows(df_gtv_dvh_2_raw, df_gtv_dvh_3) %>%
+  select(
+    mrn, 
+    roi=ROI,
+    plan_time=`Planning Exam Time`,
+    dose_grid_vol = `Dose Grid Volume [cc]`
+  ) %>%
+  distinct() %>%
+  left_join(
+    df_clinical_ctdna %>%
+      distinct(patient, mrn)
+  )
+
+df_gtv_primary <- df_gtv %>%
+  filter(
+    roi %in% c('GTVp', 'GTV', 'GTVp_preop', 'GTV_p', 'GTVpet', 'GTVmr', 'GTVp_sb', 'GTVp1'),
+  ) %>%
+  arrange(patient, plan_time) %>%
+  group_by(patient) %>%
+  filter(row_number() == 1) %>%
+  ungroup() %>%
+  mutate(source = 'mira') %>%
+  select(patient, gtv_primary = dose_grid_vol, source) %>%
+  bind_rows(
+    df_pyradiomics %>%
+      select(patient, original_shape_VoxelVolume) %>%
+      mutate(gtv_primary = original_shape_VoxelVolume / 1000) %>%
+      select(patient, gtv_primary) %>%
+      mutate(source = 'radcure')
+  ) %>%
+  distinct() %>%
+  filter(!is.na(patient)) %>%
+  group_by(patient) %>%
+  filter(row_number() == 1) %>%
+  ungroup()
+
+df_gtv_primary <- read_csv('data/clinical/2022-11-03 Manual Review GTVp.csv') %>%
+  filter(structure == 'GTVp') %>%
+  distinct(MRN, gtv_primary = volume) %>%
+  left_join(df_clinical_ctdna %>% distinct(MRN = mrn, patient)) %>%
+  mutate(source = 'manual review') %>%
+  select(patient, gtv_primary, source) %>%
+  bind_rows(df_gtv_primary)
+
+df_gtv_primary %>%
+  count(patient) %>%
+  .$n == 1 %>%
+  all %>%
+  stopifnot()
+
+df_gtv_nodes <- df_gtv %>%
+  filter(
+    grepl('GTVn', roi) | grepl('GTV_n', roi) | roi == 'GTV_2_R'
+  ) %>%
+  group_by(patient, roi) %>%
+  arrange(plan_time) %>%
+  filter(row_number() == 1) %>%
+  ungroup() %>%
+  mutate(dose_grid_vol = if_else(dose_grid_vol > 1, dose_grid_vol, 0)) %>%
+  group_by(patient) %>%
+  summarise(
+    sum_gtv_nodes = sum(dose_grid_vol),
+    n_nodes = n(),
+    source = 'mira'
+  ) %>%
+  ungroup() %>%
+  bind_rows(
+    df_radiomics_ln %>%
+      filter(!is.na(patient), feature == 'original_shape_VoxelVolume') %>%
+      group_by(patient) %>%
+      mutate(volume = value / 1000) %>%
+      mutate(volume = if_else(volume > 1, volume, 0)) %>%
+      summarise(
+        sum_gtv_nodes = sum(volume),
+        n_nodes = n(),
+        source = 'radcure'
+      )
+  ) %>%
+  filter(!is.na(patient)) %>%
+  distinct() %>%
+  group_by(patient) %>%
+  arrange(source) %>%
+  filter(row_number() == n()) %>%
+  ungroup()
+
+# df_gtv_nodes <- read_csv('data/clinical/2022-11-03 Manual Review GTVp.csv') %>%
+#   filter(structure == 'GTVn') %>%
+#   distinct(MRN, sum_gtv_nodes = volume) %>%
+#   left_join(df_clinical_ctdna %>% distinct(MRN = mrn, patient)) %>%
+#   mutate(source = 'manual review') %>%
+#   select(patient, sum_gtv_nodes, source) %>%
+#   bind_rows(df_gtv_nodes)
+
+df_gtv_nodes %>%
+  count(patient) %>%
+  .$n == 1 %>%
+  all %>%
+  stopifnot()
+
+df_glm_primary_lymphnode_volume_ctdna <- df_gtv_primary %>%
+  dplyr::rename(source_primary = source) %>%
+  left_join(df_gtv_nodes %>% dplyr::rename(source_nodes = source), by = 'patient') %>%
+  replace_na(list(sum_gtv_nodes = 0)) %>%
+  inner_join(df_ctdna_clinical, by = 'patient') %>%
+  mutate(
+    log_baseline = log10(1+Baseline),
+    log_mid = log10(1+`Mid RT`),
+    log_primary = log10(1+gtv_primary),
+    log_lymphnode = log10(1+sum_gtv_nodes)
+  )
+
+df_gtvp_anthology <- read_csv('data/clinical/Anth 2022-09-08 OPC - GTVp Data.csv')
+
+################################
+# Estimate Laterality of Nodes #
+################################
+
+df_laterality <- df_gtv %>%
+  filter(! roi %in% c('GTVp', 'GTV', 'GTVp_preop', 'GTV_p', 'GTVpet', 'GTVmr', 'GTVp_sb', 'GTVp1')) %>%
+  mutate(
+    left = grepl('L', roi),
+    right = grepl('R', roi)
+  ) %>%
+  filter(left | right) %>%
+  group_by(patient) %>%
+  summarise(
+    node_laterality = case_when(
+      any(left) & any(right) ~ 'Bilateral',
+      (any(left) & !any(right)) | (any(right) & !any(left)) ~ 'Unilateral',
+      TRUE ~ 'Neither'
+    )
+  ) %>%
+  filter(!is.na(patient))
+
+########################################
+# Calculate EQD2 from treatment dates #
+########################################
+
+df_treatment_dates <- read_csv('data/clinical/opc_treatment_delivery_info.csv') %>%
+  mutate(
+    fraction_date = gsub('(\\d+\\/\\d+\\/\\d+) .*', '\\1', BeamOnTime) %>% parse_date('%m/%d/%Y')
+  ) %>%
+  left_join(df_clinical_ctdna %>% distinct(patient, Mrn=mrn))
+
+df_ctdna_txdates_mid <- df_ctdna_collectiondates %>%
+  gather(timepoint, date, -patient) %>%
+  filter(!is.na(date)) %>%
+  filter(timepoint %in% c('date_ctdna_mid')) %>%
+  left_join(df_treatment_dates) %>%
+  filter(fraction_date < date) %>%
+  group_by(patient, timepoint) %>%
+  summarise(
+    cumulative_dose = max(CumulativeDeliveredDose) / 100,
+    mean_dose_per_fraction = mean(DosePerFraction) / 100,
+    cumulative_days = as.numeric(unique(date) - min(fraction_date)),
+    actual_doserate = cumulative_dose / cumulative_days,
+    follow_up_months = 0
+  ) %>%
+  ungroup()
+
+df_ctdna_txdates_early <- df_ctdna_collectiondates %>%
+  gather(timepoint, date, -patient) %>%
+  filter(!is.na(date)) %>%
+  filter(timepoint %in% c('date_ctdna_early')) %>%
+  left_join(df_treatment_dates) %>%
+  filter(fraction_date < date) %>%
+  group_by(patient, timepoint) %>%
+  summarise(
+    cumulative_dose = max(CumulativeDeliveredDose) / 100,
+    mean_dose_per_fraction = mean(DosePerFraction) / 100,
+    cumulative_days = as.numeric(unique(date) - min(fraction_date)),
+    actual_doserate = cumulative_dose / cumulative_days,
+    follow_up_months = 0
+  ) %>%
+  ungroup()
+
+df_total_eqd2 <- df_clinical_ctdna %>%
+  left_join(df_ctdna_collectiondates %>% select(patient, date_ctdna_followup)) %>%
+  distinct(patient, date_rt_start, date_rt_end, rt_dose, rt_fractions, date_ctdna_followup) %>%
+  mutate(
+    total_duration = as.double(date_rt_end - date_rt_start),
+    mean_dose_per_fraction = rt_dose / rt_fractions,
+    EQD2 = (rt_dose * (1 + mean_dose_per_fraction / 10) - ((log(2) / 0.35) * (total_duration - 28) / 3)) * 10 / 12,
+    on_treatment_days = as.numeric(date_rt_end - date_rt_start),
+    cumulative_days = as.numeric(date_ctdna_followup - date_rt_start),
+    actual_doserate = rt_dose / on_treatment_days,
+    follow_up_months = as.numeric(date_ctdna_followup - date_rt_end) / 30
+  ) %>%
+  mutate(timepoint = '3 months')
+
+df_eqd2 <- bind_rows(df_ctdna_txdates_early, df_ctdna_txdates_mid) %>%
+  mutate(
+    EQD2 = (cumulative_dose * (1 + mean_dose_per_fraction / 10) - if_else(cumulative_days < 28, 0, ((log(2) / 0.35) * (cumulative_days - 28) / 3))) * 10 / 12,
+    timepoint = case_when(
+      timepoint == 'date_ctdna_early' ~ 'Early RT',
+      timepoint == 'date_ctdna_mid' ~ 'Mid RT'
+    )
+  ) %>%
+  select(patient, timepoint, EQD2, cumulative_days, actual_doserate, follow_up_months) %>%
+  bind_rows(
+    df_total_eqd2 %>% select(patient, timepoint, EQD2, cumulative_days, actual_doserate, follow_up_months)
+  )
+
+df_ctdna_eqd2 <- df_ctdna_clinical %>%
+  select(patient, Baseline, `Early RT`, `Mid RT`, `3 months`, rt_dose, rt_fractions) %>%
+  gather(timepoint, ctdna, -patient, -rt_dose, -rt_fractions) %>%
+  filter(!is.na(ctdna)) %>%
+  left_join(df_eqd2) %>%
+  mutate(
+    EQD2 = if_else(timepoint == 'Baseline', 0, EQD2),
+    cumulative_days = if_else(timepoint == 'Baseline', 0, cumulative_days),
+    actual_doserate = if_else(timepoint == 'Baseline', rt_dose / rt_fractions, actual_doserate),
+    follow_up_months = if_else(timepoint == 'Baseline', 0, follow_up_months)
+  )
+
+df_ctdna_eqd2_radiomic_clinical <- df_ctdna_eqd2 %>%
+    mutate(ctdna = round(ctdna)) %>%
+    left_join(
+      df_gtv_nodes %>% select(patient, sum_gtv_nodes),
+      by = 'patient'
+    ) %>%
+    left_join(
+      df_gtv_primary %>% select(patient, gtv_primary),
+      by = 'patient'
+    ) %>%
+    inner_join(
+      df_ctdna_clinical %>% 
+        mutate(
+          chemotherapy = if_else(rt_regimen == 'CRT', 'Chemotherapy', 'No chemotherapy') %>% factor(levels = c('No chemotherapy', 'Chemotherapy')),
+          t_category = as.integer(stage_t_ajcc8),
+          n_category = as.integer(stage_n_ajcc8)
+        ) %>%
+        select(-surv_overall, -surv_progression, -surv_recurrence)
+    ) %>%
+  filter(!patient %in% df_exclude$patient)
+
+
+######################################
+# Baseline detectability differences #
+######################################
+
+df_baseline_all <- df_ctdna %>%
+  filter(timepoint == 'Baseline') %>%
+  left_join(df_gtv_primary) %>%
+  left_join(df_gtv_nodes) %>%
+  left_join(df_clinical_ctdna) %>%
+  filter(!is.na(ctdna), !is.na(gtv_primary), !is.na(sum_gtv_nodes)) %>%
+  mutate(
+    baseline_detection = if_else(ctdna == 0, 'Undetectable', 'Detectable'),
+    log_gtv_primary = log(gtv_primary + 1),
+    log_gtv_nodes = log(sum_gtv_nodes + 1)
+  )
+
+####################################################
+# Checking which patients are missing imaging data #
+####################################################
+
+df_missing_gtv_primary <- df_ctdna_clinical %>%
+  distinct(patient, mrn) %>%
+  filter(! patient %in% df_gtv_primary$patient)
+
+df_missing_gtv_primary %>%
+  write_csv('data/results/patients_missing_imaging.csv')
+
+
+#########################################################
+# Data from Bayesian model dynamic updating of RTDclear #
+#########################################################
+
+val_min_hpv <- df_ctdna_eqd2$ctdna %>% .[.>0] %>% min
+brms_gtv_model <- readRDS('data/results/brms_ctdna_eqd2_gtv_censor_m1.Rds')
+
+df_endrt <- brms_gtv_model$data %>%
+  select(-EQD2, -ctdna, -censored, -follow_up) %>%
+  distinct() %>%
+  crossing(EQD2 = 60, follow_up = c(1)) %>%
+  (function(z) {
+    p <- posterior_predict(brms_gtv_model, newdata=z)
+    z %>%
+      mutate(
+        p_clear = p %>%
+          apply(2, function(z) {sum(z < val_min_hpv) / length(z)}),
+        log_odds_clear = log(p_clear / (1-p_clear)),
+        pf_hpvdna = log10(p %>% apply(2, median)),
+        pf_hpvdna_lci = log10(p %>% apply(2, function(z) {sort(z)[round(0.025 * length(z))]})),
+        pf_hpvdna_uci = log10(p %>% apply(2, function(z) {sort(z)[round(0.975 * length(z))]})),
+      )
+  }) %>%
+  select(-EQD2) %>%
+  left_join(
+    df_ctdna_eqd2 %>%
+      filter(timepoint == '3 months') %>%
+      select(patient, ctdna, EQD2)
+  )
+
+library(doParallel)
+registerDoParallel(8)
+m_forecasting <- tibble(path=Sys.glob('data/results/forecasting/HN*.Rds')) %>%
+  mutate(
+    patient_timepoint = gsub('.*?(HN...._.).*', '\\1', path)
+  ) %>%
+  plyr::daply('patient_timepoint', function(z) {
+    readRDS(z$path)
+  })
+
+
+df_forecasting <- m_forecasting %>%
+  as_tibble(rownames = 'patient_timepoint') %>%
+  gather(sample, value, -patient_timepoint) %>%
+  select(-sample) %>%
+  separate(patient_timepoint, c('patient', 'timepoint'), sep="_") %>%
+  mutate(timepoint = as.numeric(timepoint))
+
+df_forecasting_summary <- m_forecasting %>%
+  plyr::adply(1, function(z) {
+    tibble(
+      pf_hpvdna = log10(median(z)),
+      pf_hpvdna_lci = log10(sort(z)[round(0.025 * length(z))]),
+      pf_hpvdna_uci = log10(sort(z)[round(0.975 * length(z))]),
+      p_clear = sum(z < val_min_hpv) / length(z)
+    )
+  }) %>%
+  separate(patient_timepoint, c('patient', 'timepoint_idx'), sep="_") %>%
+  mutate(timepoint_idx = as.numeric(timepoint_idx)) %>%
+  left_join(
+    df_ctdna_eqd2 %>%
+      group_by(patient) %>%
+      arrange(patient, EQD2) %>%
+      mutate(timepoint_idx = row_number()) %>%
+      ungroup()
+  ) %>%
+  filter(timepoint != '3 months') %>%
+  select(-rt_dose, -rt_fractions, -cumulative_days, -actual_doserate, -follow_up_months) %>%
+  bind_rows(
+    df_endrt %>%
+      select(patient, pf_hpvdna, pf_hpvdna_lci, pf_hpvdna_uci, p_clear, ctdna, EQD2) %>%
+      mutate(timepoint = '3 months')
+  )
+
+# ------------------- #
+# Patterns of Failure #
+# ------------------- #
+
+df_ctdna_clinical_recurrencepattern <- df_ctdna_clinical %>%
+  mutate(
+    failure_pattern = case_when(
+      local_failure & ! regional_failure & ! distant_failure ~ 'Local only recurrence',
+      regional_failure & ! distant_failure ~ 'Regional recurrence',
+      distant_failure ~ 'Distant recurrence',
+      TRUE ~ 'No recurrence'
+    ) %>%
+      factor(levels = c('No recurrence', 'Local only recurrence', 'Regional recurrence', 'Distant recurrence')),
+    
+    etime = case_when(
+      local_failure & ! regional_failure & ! distant_failure ~ interval(date_rt_end, date_local_failure) %/% days(1) / (365/12),
+      regional_failure & ! distant_failure ~ interval(date_rt_end, date_regional_failure) %/% days(1) / (365/12),
+      distant_failure ~ interval(date_rt_end, date_distant_failure) %/% days(1) / (365/12),
+      TRUE ~ interval(date_rt_end, date_last_followup) %/% days(1) / (365/12)
+    )
+  )
+
+
+# ---------------------- #
+# BRMS model using Stage #
+# ---------------------- #
+
+brms_ctdna_eqd2_stage <- readRDS('data/results/brms_ctdna_eqd2_stage.Rds')
+
+vector_brms_stage_fixedeffects <- variables(brms_ctdna_eqd2_stage)[
+  startsWith(variables(brms_ctdna_eqd2_stage), 'b_') |
+  startsWith(variables(brms_ctdna_eqd2_stage), 'cor_')
+] 
+
+df_brms_stage_fixedeffects_names <- tibble(
+  parameter = vector_brms_stage_fixedeffects,
+  model = case_when(
+    grepl('cor_', parameter) ~ 'Cor',
+    grepl('zi', parameter) ~ 'ZI',
+    TRUE ~ 'NB'
+  ),
+  name = case_when(
+    model == 'Cor' ~ gsub('_', ' ', gsub('.*?__(.*?)__(.*)', '\\1 vs. \\2', parameter)),
+    grepl('Intercept', parameter) %>% unlist ~ 'Intercept',
+    parameter == 'b_EQD2' ~ 'EQD2',
+    parameter == 'b_zi_EQD2' ~ 'EQD2',
+    grepl(':', parameter) %>% unlist ~ parameter %>% gsub('b_', '', .) %>% gsub('zi_', '', .) %>% gsub('chemotherapy', 'Chemo', .) %>% gsub('t_category', 'T category', .) %>% gsub('n_category', 'N category', .) %>% gsub(':', '\u00D7', .),
+    grepl('t_category', parameter) %>% unlist ~ 'T category',
+    grepl('n_category', parameter) %>% unlist ~ 'N category',
+    grepl('chemotherapy', parameter) %>% unlist ~ 'Chemo',
+  )
+) %>%
+  unite('label', model, name, sep = ': ', remove = F)
+
+df_brms_ctdna_stage_eqd2_fixedeffects <- get_fixed_effects(
+  brms_ctdna_eqd2_stage,
+  vector_brms_stage_fixedeffects,
+  df_brms_stage_fixedeffects_names
+)
+
+df_opc_ctdna_alldates <- df_clinical_ctdna %>%
+  select(
+    patient,
+    date_rt_start,
+    date_rt_end,
+    date_of_dx,
+    date_local_failure,
+    date_regional_failure,
+    date_distant_failure,
+    date_last_followup,
+    date_recurrence,
+    date_progression
+  ) %>%
+  left_join(
+    df_ctdna_collectiondates
+  )
+
+# --------------------------- #
+# Example BRMS model updating #
+# --------------------------- #
+
+updated_model_1 <- brms_gtv_model$data %>%
+  filter(patient == 'HN3332') %>%
+  mutate(
+    timepoint = row_number(),
+    patient_timepoint = paste(patient, timepoint, sep='_')
+  ) %>%
+  plyr::dlply('patient_timepoint', function(z) {
+  update(
+    brms_gtv_model,
+    newdata = brms_gtv_model$data %>%
+      filter(patient != 'HN3332') %>%
+      bind_rows(
+        brms_gtv_model$data %>%
+          filter(patient == 'HN3332') %>%
+          mutate(patient = 'newpatient') %>%
+          filter(row_number() <= z$timepoint)
+      ),
+    chains = 4,
+    cores = 4,
+    iter = 500
+  )
+})
+
+updated_model_2 <- brms_gtv_model$data %>%
+  filter(patient == 'HN2960') %>%
+  mutate(
+    timepoint = row_number(),
+    patient_timepoint = paste(patient, timepoint, sep='_')
+  ) %>%
+  plyr::dlply('patient_timepoint', function(z) {
+  update(
+    brms_gtv_model,
+    newdata = brms_gtv_model$data %>%
+      filter(patient != 'HN2960') %>%
+      bind_rows(
+        brms_gtv_model$data %>%
+          filter(patient == 'HN2960') %>%
+          mutate(patient = 'newpatient') %>%
+          filter(row_number() <= z$timepoint)
+      ),
+    chains = 4,
+    cores = 4,
+    iter = 500
+  )
+})
+
+
+list_brms_updated_models <- list(
+  'HN3332' = updated_model_1,
+  'HN2960' = updated_model_2
+)
+
+# Write to file
+
+save(
+  df_baseline_all,
+  m_forecasting,
+  df_forecasting,
+  df_forecasting_summary,
+  df_clinical_ctdna,
+  df_clinical_radcure,
+  df_ctdna,
+  df_ctdna_clinical,
+  df_ctdna_collectiondates,
+  df_ctdna_eqd2,
+  df_ctdna_eqd2_radiomic_clinical,
+  df_ctdna_wide,
+  df_eqd2,
+  df_exclude,
+  df_glm_primary_lymphnode_volume_ctdna,
+  df_gtv_nodes,
+  df_gtv_primary,
+  df_laterality,
+  df_pyradiomics,
+  df_radiomics_fourfeature,
+  df_surgery,
+  brms_gtv_model,
+  df_endrt,
+  df_opc_ctdna_alldates,
+  df_ctdna_clinical_recurrencepattern,
+  val_min_hpv,
+  list_brms_updated_models,
+  file = 'data/results/HPV_analysis_dataframes.Rdata'
+)
+```
+
+Bayesian modeling
+
+```{r bayesian_modeling, eval=F}
+df_ctdna_eqd2_radiomic_clinical_gtv <- df_ctdna_eqd2_radiomic_clinical %>%
+    mutate(
+      log_gtv_primary = log10(1+gtv_primary),
+      log_sum_gtv_nodes = log10(1+sum_gtv_nodes)
+    ) %>%
+  filter(!is.na(log_gtv_primary), !is.na(log_sum_gtv_nodes))
+
+brms_ctdna_eqd2_stage <- brm(
+  bf(
+    ctdna ~ EQD2 + chemotherapy + EQD2:chemotherapy + t_category + EQD2:t_category + n_category + EQD2:n_category + (1 + EQD2 | p | patient),
+    zi ~ EQD2 + EQD2:chemotherapy + EQD2:t_category + EQD2:n_category + (0 + EQD2 | p | patient)
+  ),
+  data = df_ctdna_eqd2_radiomic_clinical %>% mutate(chemotherapy = as.integer(chemotherapy)),
+  family = zero_inflated_negbinomial(link = 'log'),
+  iter = 2000, warmup = 1000, chains = 4, cores = 4,
+  save_pars = save_pars(all = TRUE)
+)
+
+saveRDS(brms_ctdna_eqd2_stage, 'data/results/brms_ctdna_eqd2_stage.Rds')
+
+
+# Incorporating GTV information instead of stage
+
+prior1 = c(
+  prior(student_t(3, 0, 1), class=sd)
+)
+
+brms_ctdna_eqd2_gtv <- brm(
+  bf(
+    ctdna ~ chemotherapy + EQD2:chemotherapy + log_gtv_primary + EQD2:log_gtv_primary + log_sum_gtv_nodes + EQD2:log_sum_gtv_nodes + (1 + EQD2 | p | patient),
+    zi ~ EQD2 + chemotherapy + log_gtv_primary + log_sum_gtv_nodes + (1 | p | patient)
+  ),
+  data = df_ctdna_eqd2_radiomic_clinical_gtv %>% mutate(chemotherapy = as.integer(chemotherapy)) %>% mutate(EQD2 = EQD2),
+  family = zero_inflated_negbinomial(link = 'log'),
+  iter = 2000, warmup = 1000, chains = 4, cores = 4,
+  save_pars = save_pars(all = TRUE), 
+  prior = prior1
+)
+
+saveRDS(brms_ctdna_eqd2_gtv, 'data/results/brms_ctdna_eqd2_gtv.Rds')
+```
+
+```{r, eval=F}
+df_ctdna_eqd2_gtv <- df_ctdna_eqd2 %>%
+    left_join(
+      df_gtv_nodes %>% select(patient, sum_gtv_nodes),
+      by = 'patient'
+    ) %>%
+    left_join(
+      df_gtv_primary %>% select(patient, gtv_primary),
+      by = 'patient'
+    ) %>%
+    inner_join(
+      df_ctdna_clinical %>% 
+        mutate(
+          chemotherapy = if_else(rt_regimen == 'CRT', 'Chemotherapy', 'No chemotherapy') %>% factor(levels = c('No chemotherapy', 'Chemotherapy')) %>% as.integer(),
+          t_category = as.integer(stage_t_ajcc8),
+          n_category = as.integer(stage_n_ajcc8)
+        ) %>%
+        select(-surv_overall, -surv_progression, -surv_recurrence)
+    ) %>%
+  filter(!patient %in% df_exclude$patient) %>%
+  mutate(
+      log_gtv_primary = log10(1+gtv_primary),
+      log_sum_gtv_nodes = log10(1+sum_gtv_nodes)
+    ) %>%
+  filter(!is.na(log_gtv_primary), !is.na(log_sum_gtv_nodes)) %>%
+  mutate(
+    censored = if_else(ctdna == 0, 'left', 'none')
+  )
+
+brms_ctdna_eqd2_gtv_censor_m1 <- brm(
+  ctdna | cens(censored) ~ EQD2 + chemotherapy + EQD2:chemotherapy + log_gtv_primary + EQD2:log_gtv_primary + log_sum_gtv_nodes + EQD2:log_sum_gtv_nodes + follow_up + follow_up:chemotherapy + follow_up:log_gtv_primary + follow_up:log_sum_gtv_nodes + (1 + EQD2 + follow_up | patient),
+  data = df_ctdna_eqd2_gtv %>%
+    mutate(
+      ctdna = if_else(ctdna == 0, with(df_ctdna_eqd2_gtv, min(ctdna[ctdna!=0])), ctdna),
+      follow_up = if_else(follow_up_months > 0, 1, 0)
+    ),
+  family = lognormal(),
+  iter = 2000, warmup = 1000, chains = 4, cores = 4,
+  save_pars = save_pars(all = TRUE)
+)
+saveRDS(brms_ctdna_eqd2_gtv_censor_m1, 'data/results/brms_ctdna_eqd2_gtv_censor_m1.Rds')
+
+# model with no follow_up in random effects
+brms_ctdna_eqd2_gtv_censor_m2 <- brm(
+  ctdna | cens(censored) ~ EQD2 + chemotherapy + EQD2:chemotherapy + log_gtv_primary + EQD2:log_gtv_primary + log_sum_gtv_nodes + EQD2:log_sum_gtv_nodes + follow_up + follow_up:chemotherapy + follow_up:log_gtv_primary + follow_up:log_sum_gtv_nodes + (1 + EQD2 | patient),
+  data = df_ctdna_eqd2_gtv %>%
+    mutate(
+      ctdna = if_else(ctdna == 0, with(df_ctdna_eqd2_gtv, min(ctdna[ctdna!=0])), ctdna),
+      follow_up = if_else(follow_up_months > 0, 1, 0)
+    ),
+  family = lognormal(),
+  iter = 2000, warmup = 1000, chains = 4, cores = 4,
+  save_pars = save_pars(all = TRUE)
+)
+saveRDS(brms_ctdna_eqd2_gtv_censor_m2, 'data/results/brms_ctdna_eqd2_gtv_censor_m2.Rds')
+
+# Weibull model
+brms_ctdna_eqd2_gtv_censor_m3 <- brm(
+  ctdna | cens(censored) ~ EQD2 + chemotherapy + EQD2:chemotherapy + log_gtv_primary + EQD2:log_gtv_primary + log_sum_gtv_nodes + EQD2:log_sum_gtv_nodes + follow_up + follow_up:chemotherapy + follow_up:log_gtv_primary + follow_up:log_sum_gtv_nodes + (1 + EQD2 + follow_up | patient),
+  data = df_ctdna_eqd2_gtv %>%
+    mutate(
+      ctdna = if_else(ctdna == 0, with(df_ctdna_eqd2_gtv, min(ctdna[ctdna!=0])), ctdna),
+      follow_up = if_else(follow_up_months > 0, 1, 0)
+    ),
+  family = lognormal(),
+  iter = 2000, warmup = 1000, chains = 4, cores = 4,
+  save_pars = save_pars(all = TRUE)
+)
+saveRDS(brms_ctdna_eqd2_gtv_censor_m3, 'data/results/brms_ctdna_eqd2_gtv_censor_m3.Rds')
+
+# With priors
+brms_ctdna_eqd2_gtv_censor_m4 <- brm(
+  ctdna | cens(censored) ~ EQD2 + chemotherapy + EQD2:chemotherapy + log_gtv_primary + EQD2:log_gtv_primary + log_sum_gtv_nodes + EQD2:log_sum_gtv_nodes + follow_up + follow_up:chemotherapy + follow_up:log_gtv_primary + follow_up:log_sum_gtv_nodes + (1 + EQD2 + follow_up | patient),
+  data = df_ctdna_eqd2_gtv %>%
+    mutate(
+      ctdna = if_else(ctdna == 0, with(df_ctdna_eqd2_gtv, min(ctdna[ctdna!=0])), ctdna),
+      follow_up = if_else(follow_up_months > 0, 1, 0)
+    ),
+  family = lognormal(),
+  iter = 2000, warmup = 1000, chains = 4, cores = 4,
+  save_pars = save_pars(all = TRUE),
+  prior = c(
+    prior(student_t(3, 0, 1), class=sd)
+  )
+)
+saveRDS(brms_ctdna_eqd2_gtv_censor_m4, 'data/results/brms_ctdna_eqd2_gtv_censor_m4.Rds')
+
+# Follow-up months instead of binary
+
+brms_ctdna_eqd2_gtv_censor_m5 <- brm(
+  ctdna | cens(censored) ~ EQD2 + chemotherapy + EQD2:chemotherapy + log_gtv_primary + EQD2:log_gtv_primary + log_sum_gtv_nodes + EQD2:log_sum_gtv_nodes + follow_up_months + follow_up_months:chemotherapy + follow_up_months:log_gtv_primary + follow_up_months:log_sum_gtv_nodes + (1 + EQD2 + follow_up_months | patient),
+  data = df_ctdna_eqd2_gtv %>%
+    mutate(
+      ctdna = if_else(ctdna == 0, with(df_ctdna_eqd2_gtv, min(ctdna[ctdna!=0])), ctdna),
+      follow_up = if_else(follow_up_months > 0, 1, 0)
+    ),
+  family = lognormal(),
+  iter = 2000, warmup = 1000, chains = 4, cores = 4,
+  save_pars = save_pars(all = TRUE)
+)
+saveRDS(brms_ctdna_eqd2_gtv_censor_m5, 'data/results/brms_ctdna_eqd2_gtv_censor_m5.Rds')
+
+
+# Stage instead of GTV
+
+brms_ctdna_eqd2_gtv_censor_m6 <- brm(
+  ctdna | cens(censored) ~ EQD2 + chemotherapy + EQD2:chemotherapy + stage_t_ajcc8_numeric + EQD2:stage_t_ajcc8_numeric + stage_n_ajcc8_numeric + EQD2:stage_n_ajcc8_numeric + follow_up + follow_up:chemotherapy + follow_up:stage_t_ajcc8_numeric + follow_up:stage_n_ajcc8_numeric + (1 + EQD2 + follow_up | patient),
+  data = df_ctdna_eqd2_gtv %>%
+    mutate(
+      ctdna = if_else(ctdna == 0, with(df_ctdna_eqd2_gtv, min(ctdna[ctdna!=0])), ctdna),
+      follow_up = if_else(follow_up_months > 0, 1, 0),
+      stage_t_ajcc8_numeric = as.numeric(stage_t_ajcc8),
+      stage_n_ajcc8_numeric = as.numeric(stage_n_ajcc8)
+    ),
+  family = lognormal(),
+  iter = 2000, warmup = 1000, chains = 4, cores = 4,
+  save_pars = save_pars(all = TRUE)
+)
+saveRDS(brms_ctdna_eqd2_gtv_censor_m6, 'data/results/brms_ctdna_eqd2_gtv_censor_m6.Rds')
+```
+
+```{r model_comparison, eval= F, include=FALSE}
+brms_models <- list(
+  'Lognormal model' = readRDS('data/results/brms_ctdna_eqd2_gtv_censor_m1.Rds'),
+  'No follow-up random effects' = readRDS('data/results/brms_ctdna_eqd2_gtv_censor_m2.Rds'),
+  'Weibull model' = readRDS('data/results/brms_ctdna_eqd2_gtv_censor_m3.Rds'),
+  'Informative priors on random effects' = readRDS('data/results/brms_ctdna_eqd2_gtv_censor_m4.Rds'),
+  'Follow-up delay in months' = readRDS('data/results/brms_ctdna_eqd2_gtv_censor_m5.Rds'),
+  'Replacing GTV with stage' = readRDS('data/results/brms_ctdna_eqd2_gtv_censor_m6.Rds')
+) %>%
+  lapply(function(z) {add_criterion(z, 'loo')})
+
+loo::loo_compare(
+  brms_models[[1]],
+  brms_models[[2]],
+  brms_models[[3]],
+  brms_models[[4]],
+  brms_models[[5]],
+  brms_models[[6]],
+  model_names = names(brms_models)
+) %>%
+  as_tibble(rownames = 'model') %>%
+  mutate(model = factor(model, levels = rev(model))) %>%
+  ggplot(aes(
+    y = model,
+    x = elpd_diff
+  )) +
+  geom_vline(xintercept = 0, color = 'black') +
+  geom_errorbarh(
+    aes(
+      xmin = elpd_diff - se_diff,
+      xmax = elpd_diff + se_diff
+    ),
+    height = 0
+  ) +
+  geom_point()
+```
+
+# T1: Summary of the Cohort
+
+```{r clinical_tables}
+array_full_table_variables <- c(
+      'p16_status',
+      'sex',
+      'age_at_dx',
+      'ecog',
+      'stage_t_ajcc8',
+      'stage_n_ajcc8',
+      'stage_ajcc8',
+      'smoking_status',
+      'smoking_packyears',
+      'rt_regimen',
+      'local_failure',
+      'regional_failure',
+      'distant_failure',
+      'vital_status'
+    )
+
+array_full_table_labels <- list(
+      p16_status ~ 'p16 status',
+      sex ~ 'Sex',
+      age_at_dx ~ 'Age at diagnosis',
+      ecog ~ 'ECOG Status',
+      stage_t_ajcc8 ~ 'T stage',
+      stage_n_ajcc8 ~ 'N stage',
+      stage_ajcc8 ~ 'Overall stage (AJCC8)',
+      smoking_status ~ 'Smoking status',
+      smoking_packyears ~ 'Smoking packyears',
+      rt_regimen ~ 'RT or CRT',
+      local_failure ~ 'Local Failure',
+      regional_failure ~ 'Regional Failure',
+      distant_failure ~ 'Distant Failure',
+      vital_status ~ 'Vital Status'
+    )
+
+abridged_table_variables <- c('age_at_dx', 'sex', 'ecog', 'stage_t_ajcc8', 'stage_n_ajcc8', 'smoking_status')
+array_abridged_table_labels <- list(
+      sex ~ 'Sex',
+      age_at_dx ~ 'Age at diagnosis',
+      ecog ~ 'ECOG Status',
+      stage_t_ajcc8 ~ 'T stage',
+      stage_n_ajcc8 ~ 'N stage',
+      smoking_status ~ 'Smoking status'
+    )
+
+df_ctdna_clinical %>%
+  mutate(rt_regimen = factor(rt_regimen, levels = c('RT Alone', 'CRT', 'RT + EGFRI', 'RT+ IO'))) %>%
+  tbl_summary(
+    by = 'rt_regimen',
+    include = all_of(abridged_table_variables),
+    label = array_abridged_table_labels
+  )
+```
+
+# F1: Factors explaining HPV DNA levels and detectability
+
+```{r brms_conditional_effects_gtv_model, fig.height = 11, fig.width = 12, eval=F}
+# ------------------- #
+# Retrieve schematics #
+# ------------------- #
+
+img <- readPNG("../paper_hpv_dpcr/schematics/consort_diagram-03.png")
+g1 <- rasterGrob(img, interpolate=TRUE)
+
+# -------------------- #
+# BRMS model using GTV #
+# -------------------- #
+
+brms_ctdna_eqd2_gtv <- readRDS('data/results/brms_ctdna_eqd2_gtv.Rds')
+
+# ----------------- #
+# Plot BRMS results #
+# ----------------- #
+
+vector_brms_gtv_fixedeffects <- variables(brms_gtv_model)[
+  startsWith(variables(brms_gtv_model), 'b_') |
+  startsWith(variables(brms_gtv_model), 'cor_')
+] 
+
+
+df_brms_gtv_fixedeffects_names <- tibble(
+  parameter = vector_brms_gtv_fixedeffects,
+  model = case_when(
+    grepl('cor_', parameter) ~ 'Cor',
+    grepl('zi', parameter) ~ 'ZI',
+    TRUE ~ 'NB'
+  ),
+  name = case_when(
+    model == 'Cor' ~ gsub('_', ' ', gsub('.*?__(.*?)__(.*)', '\\1 vs. \\2', parameter)),
+    grepl('Intercept', parameter) %>% unlist ~ 'Intercept',
+    parameter == 'b_EQD2' ~ 'EQD2',
+    parameter == 'b_zi_EQD2' ~ 'EQD2',
+    grepl(':', parameter) %>% unlist ~ parameter %>% gsub('b_', '', .) %>% gsub('zi_', '', .) %>% gsub('chemotherapy', 'Chemo', .) %>% gsub('log_gtv_primary', 'GTV primary', .) %>% gsub('log_sum_gtv_nodes', 'GTV nodes', .) %>% gsub(':', '\u00D7', .) %>% gsub('cumulative_days', 'Days', .) %>% gsub('actual_doserate', 'Dose rate', .) %>% gsub('follow_up', 'Post-RT', .),
+    grepl('gtv_primary', parameter) %>% unlist ~ 'GTV primary',
+    grepl('sum_gtv_nodes', parameter) %>% unlist ~ 'GTV nodes',
+    grepl('chemotherapy', parameter) %>% unlist ~ 'Chemo',
+    grepl('follow_up', parameter) %>% unlist ~ 'Post-RT'
+  )
+) %>%
+  unite('label', model, name, sep = ': ', remove = F)
+
+df_brms_gtv_fixedeffects <- get_fixed_effects(
+  brms_gtv_model,
+  vector_brms_gtv_fixedeffects,
+  df_brms_gtv_fixedeffects_names
+)
+
+p_fixedeffects <- plot_fixedeffects_compact(
+  df_brms_gtv_fixedeffects
+)
+
+pg_conditional_effects_eqd2 <- plot_grid(
+  plot_conditional_effects_eqd2(
+    brms_gtv_model,
+    tibble(
+      log_gtv_primary = c(0, 1, 2),
+      cond__ = c('0', '1', '2')
+    ),
+    'log GTVp'
+  ) + scale_y_continuous(trans=scales::pseudo_log_trans(sigma=0.1), breaks = c(0, 10^(1:10))),
+  plot_conditional_effects_eqd2(
+    brms_gtv_model,
+    tibble(
+      log_sum_gtv_nodes = c(0, 1, 2),
+      cond__ = c('0', '1', '2')
+    ),
+    'log GTVn'
+  ) + scale_y_continuous(trans=scales::pseudo_log_trans(sigma=0.1), breaks = c(0, 10^(1:10))),
+  plot_conditional_effects_eqd2(
+    brms_gtv_model,
+    tibble(
+      chemotherapy = c(0, 1),
+      cond__ = c('RT', 'CRT')
+    ),
+    'Chemo'
+  ) + scale_y_continuous(trans=scales::pseudo_log_trans(sigma=0.1), breaks = c(0, 10^(1:10))),
+  ncol = 1
+)
+
+pg_conditional_effects_followup <- plot_grid(
+  plot_conditional_effects_eqd2(
+    brms_gtv_model,
+    tibble(
+      EQD2 = 60,
+      follow_up = 0,
+      log_gtv_primary = c(0, 1, 2),
+      cond__ = c('0', '1', '2')
+    ),
+    'log GTVp',
+    indep_var = 'follow_up'
+  ) +
+    scale_y_continuous(
+      trans=scales::pseudo_log_trans(sigma=0.1), 
+      breaks = c(0, 10^(1:10))
+    ) +
+    labs(
+      x = 'Post-RT'
+    ),
+  plot_conditional_effects_eqd2(
+    brms_gtv_model,
+    tibble(
+      EQD2 = 60,
+      follow_up = 0,
+      log_sum_gtv_nodes = c(0, 1, 2),
+      cond__ = c('0', '1', '2')
+    ),
+    'log GTVn',
+    indep_var = 'follow_up'
+  ) +
+    scale_y_continuous(
+      trans=scales::pseudo_log_trans(sigma=0.1),
+      breaks = c(0, 10^(1:10))
+    ) +
+    labs(
+      x = 'Post-RT'
+    ),
+  plot_conditional_effects_eqd2(
+    brms_gtv_model,
+    tibble(
+      EQD2 = 60,
+      follow_up = 0,
+      chemotherapy = c(0, 1),
+      cond__ = c('RT', 'CRT')
+    ),
+    'Chemo',
+    indep_var = 'follow_up'
+  ) +
+    scale_y_continuous(
+      trans=scales::pseudo_log_trans(sigma=0.1), 
+      breaks = c(0, 10^(1:10))
+    ) +
+    labs(
+      x = 'Post-RT'
+    ),
+  ncol = 1
+)
+
+pg_brms <- plot_grid(
+  p_fixedeffects,
+  pg_conditional_effects_eqd2,
+  pg_conditional_effects_followup,
+  rel_widths = c(5, 2, 2),
+  nrow = 1
+)
+
+# --------------- #
+# Assemble figure #
+# --------------- #
+
+plot_grid(
+  plot_grid(
+    g1,
+    ncol = 1,
+    labels = c('A')
+  ),
+  pg_brms,
+  ncol = 1,
+  rel_heights = c(2.5, 2)
+)
+```
+
+Figure showing HPV DNA vs EQD2.
+
+```{r hpvdna_vs_eqd2, fig.height = 6, fig.width = 6}
+val_max_eqd2 <- max(df_ctdna_eqd2$EQD2, na.rm=T)
+val_max_hpv <- max(df_ctdna_eqd2$ctdna, na.rm=T)
+
+p_hpvdna_vs_eqd2 <- df_ctdna_eqd2 %>%
+  ggplot(aes(
+    x = EQD2,
+    y = ctdna,
+    group = patient
+  )) +
+  geom_line(
+    color = 'Grey80',
+    alpha = 0.5
+  ) +
+  geom_point(aes(
+    color = timepoint
+  )) +
+  scale_y_continuous(
+    trans = scales::pseudo_log_trans(sigma=0.1),
+    breaks = c(0, 10^(0:10)),
+    labels = c('Undetect.', sprintf("%.20g", c(10^(0:10))))
+  ) +
+  scale_color_brewer(palette = 'Set1') +
+  labs(
+    x = 'RT dose (Gy, EQD2)',
+    y = 'HPV DNA level'
+  )
+
+p_percent_undetectable_vs_eqd2 <- df_ctdna_eqd2 %>%
+  filter(!is.na(EQD2)) %>%
+  mutate(dose_bin = cut(EQD2, c(seq(0, max(EQD2, na.rm=T), 10), Inf), include.lowest=T)) %>%
+  group_by(dose_bin) %>%
+  summarise(
+    n_undetectable = sum(ctdna == 0),
+    n_total = n(),
+    percent_undetectable = n_undetectable / n_total * 100
+  ) %>%
+  mutate(
+    bin_start = gsub('.(\\d+),.*', '\\1', dose_bin) %>% as.numeric,
+    bin_end = gsub('.\\d+,(.*)', '\\1', dose_bin) %>% substr(1, (nchar(.)-1)) %>% if_else(.=='Inf', as.character(val_max_eqd2), .) %>% as.numeric
+  ) %>%
+  ggplot() +
+  geom_rect(aes(
+    xmin = bin_start,
+    xmax = bin_end,
+    ymin = 0,
+    ymax = percent_undetectable
+  ), fill = '#ded076') +
+  geom_text(aes(
+    label = sprintf('%s%%', round(percent_undetectable, 1)),
+    x = bin_start,
+    y = percent_undetectable
+  ), hjust = 0, nudge_y = 10) +
+  labs(
+    x = 'RT dose (Gy, EQD2)',
+    y = 'Percent undetectable'
+  )
+
+plot_grid(
+  p_hpvdna_vs_eqd2 +
+    ggtitle('HPV DNA levels through RT') +
+    theme(
+      legend.position = 'none',
+      axis.title.x = element_blank(),
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      panel.grid = element_blank(),
+      panel.background = element_blank()
+    ),
+  p_percent_undetectable_vs_eqd2 +
+    theme(
+      panel.grid = element_blank(),
+      panel.background = element_blank()
+    ),
+  ncol = 1,
+  align = 'v',
+  rel_heights = c(2,1)
+)
+```
+
+Figure showing posterior predictive checks.
+
+```{r posterior_predictive_check, fig.height = 5, fig.width = 15}
+plot_grid(
+  plotlist = plot_posterior_predictive_check(brms_gtv_model),
+  rel_widths = c(1,2)
+)
+```
+
+# F2: Survival outcomes by HPV DNA detectability
+
+```{r survival_detectability, fig.width = 12, fig.height = 9}
+plotdata_ctdna_radiomic_joint <- df_ctdna_eqd2_radiomic_clinical %>%
+  filter(timepoint == '3 months') %>%
+  filter(!is.na(sum_gtv_nodes), !is.na(gtv_primary), !is.na(ctdna)) %>%
+  filter(
+    patient %in% (df_ctdna_eqd2_radiomic_clinical %>% filter(timepoint == 'Baseline', ctdna > 0) %>% .$patient)
+  ) %>%
+  mutate(
+    detectable = ctdna > 0,
+    Chemotherapy = rt_regimen == 'CRT',
+    `log(1+GTVp)` = log10(1+gtv_primary),
+    `log(1+GTVn)` = log10(1+sum_gtv_nodes),
+    `log(1+ctDNA)` = log10(1+ctdna)
+  )
+
+# ---------------------------- #
+# KM plot - split by clearance #
+# ---------------------------- #
+
+survfit_rfs_by_clearance <- survfit(
+  Surv(time_to_recurrence, recurrence) ~ clearance,
+  data = plotdata_ctdna_radiomic_joint
+)
+
+survplot_rfs_by_clearance <- ggsurvplot(
+  survfit_rfs_by_clearance,
+  risk.table = T,
+  legend.title="Clearance",
+  palette = 'jama',
+  risk.table.title='',
+  tables.col = 'strata',
+  pval = T
+) +
+  labs(
+    x = 'Time (months)',
+    y = 'Recurrence-free survival'
+  )
+
+# ------------------------------- #
+# Cox analysis with detectability #
+# ------------------------------- #
+
+cox_detectability_stage <- coxph(
+  Surv(time_to_recurrence, recurrence) ~ clearance + `T category` + `N category`,
+  data = plotdata_ctdna_radiomic_joint %>%
+    mutate(
+      clearance = !detectable,
+      `T category` = as.integer(stage_t_ajcc8),
+      `N category` = as.integer(stage_n_ajcc8)
+    )
+)
+
+cox_detectability_gtv <- coxph(
+  Surv(time_to_recurrence, recurrence) ~ clearance + `log GTVp` + `log GTVn`,
+  data = plotdata_ctdna_radiomic_joint %>%
+    mutate(
+      clearance = !detectable,
+      `log GTVp` = log10(1 + gtv_primary),
+      `log GTVn` = log10(1 + sum_gtv_nodes)
+    )
+)
+
+p_cox_detectability <- forestmodel::forest_model(
+  model_list = list(cox_detectability_stage, cox_detectability_gtv),
+  show_global_p = 'bottom',
+  recalculate_width = 8
+) +
+  geom_hline(yintercept = 4.5, size = 2, color = 'black')
+
+
+# ------------------- #
+# Patterns of failure #
+# ------------------- #
+
+pd_ctdna_gtv_recurrencepattern <- df_ctdna_clinical_recurrencepattern %>%
+  inner_join(df_gtv_primary %>% select(patient, gtv_primary)) %>%
+  inner_join(df_gtv_nodes %>% select(patient, sum_gtv_nodes)) %>%
+  mutate(
+    `log GTVp` = log10(1+gtv_primary),
+    `log GTVn` = log10(1+sum_gtv_nodes)
+  )
+
+val_n_recurrence_imagingincluded_localonly <- pd_ctdna_gtv_recurrencepattern %>%
+  filter(failure_pattern == 'Local only recurrence') %>% nrow()
+
+val_n_recurrence_imagingincluded_regional <- pd_ctdna_gtv_recurrencepattern %>%
+  filter(failure_pattern == 'Regional recurrence') %>% nrow()
+
+val_n_recurrence_imagingincluded_distant <- pd_ctdna_gtv_recurrencepattern %>%
+  filter(failure_pattern == 'Distant recurrence') %>% nrow()
+
+coxph_recurrencepattern <- coxph(
+  Surv(etime, failure_pattern) ~ clearance + `log GTVp`,
+  data = pd_ctdna_gtv_recurrencepattern %>%
+    mutate(
+      stage_t_ajcc8 = as.integer(stage_t_ajcc8)
+    ),
+  id = patient
+)
+
+s_coxph_recurrencepattern <- summary(coxph_recurrencepattern)
+
+plotdata_coxph_recurrencepattern <- s_coxph_recurrencepattern$conf.int %>%
+  as_tibble(rownames = 'predictor') %>%
+  left_join(s_coxph_recurrencepattern$coefficients %>% as_tibble(rownames = 'predictor') %>% select(predictor, `Pr(>|z|)`)) %>% 
+  separate(predictor, c('predictor', 'state'), sep='_') %>%
+  mutate(
+    predictor = gsub('`', '', predictor),
+    state = case_when(
+      state == '1:2' ~ sprintf('Local only recurrence (n = %s)', val_n_recurrence_imagingincluded_localonly),
+      state == '1:3' ~ sprintf('Regional recurrence (n = %s)', val_n_recurrence_imagingincluded_regional),
+      state == '1:4' ~ sprintf('Distant recurrence (n = %s)', val_n_recurrence_imagingincluded_distant)
+    ) %>% factor(
+      levels = c(
+        sprintf('Local only recurrence (n = %s)', val_n_recurrence_imagingincluded_localonly),
+        sprintf('Regional recurrence (n = %s)', val_n_recurrence_imagingincluded_regional),
+        sprintf('Distant recurrence (n = %s)', val_n_recurrence_imagingincluded_distant)
+      )
+    )
+  ) %>%
+  dplyr::rename(
+    HR = `exp(coef)`,
+    lci = `lower .95`,
+    uci = `upper .95`
+  ) %>%
+  mutate(
+    label = sprintf('HR: %s (%s - %s), p = %s', signif(HR, 3), signif(lci, 3), signif(uci, 3), signif(`Pr(>|z|)`, 3))
+  )
+
+p_coxph_recurrencepattern_forest <- plotdata_coxph_recurrencepattern %>%
+  ggplot(aes(
+    x = HR,
+    xmin = lci,
+    xmax = uci,
+    y = predictor
+  )) +
+  geom_errorbarh(height = 0.2, color = 'black') +
+  geom_point(shape = 15, size = 3, color = 'black') +
+  facet_wrap(~state, ncol = 1) +
+  scale_x_log10() +
+  geom_vline(xintercept = 1, color = 'black') +
+  theme(
+    strip.text = element_text(face=2, hjust = 0),
+    text=element_text(size=18),
+    panel.background = element_rect(fill = '#FCF8F8')
+  ) +
+  labs(
+    x = 'Hazard Ratio'
+  )
+
+p_coxph_recurrencepattern_text <- plotdata_coxph_recurrencepattern %>%
+  ggplot(aes(
+    x = 0,
+    y = predictor,
+    label = label
+  )) +
+  geom_text(aes(
+    label = label
+  ), hjust = 0, size=4) +
+  facet_wrap(~state, ncol = 1) +
+  theme_nothing() +
+  xlim(0, 10)
+
+pg_cox_recurrencepattern <- plot_grid(
+  p_coxph_recurrencepattern_forest,
+  p_coxph_recurrencepattern_text,
+  nrow = 1,
+  align = 'h',
+  rel_widths = c(5, 3)
+)
+
+val_p_gtvp_localonly <- plotdata_coxph_recurrencepattern %>%
+  filter(predictor == 'log GTVp', startsWith(as.character(state), 'Local')) %>%
+  .$`Pr(>|z|)` %>%
+  signif(3)
+
+val_p_gtvp_distant <- plotdata_coxph_recurrencepattern %>%
+  filter(predictor == 'log GTVp', startsWith(as.character(state), 'Distant')) %>%
+  .$`Pr(>|z|)` %>%
+  signif(3)
+
+val_n_local_recurrence <- sum(df_ctdna_clinical_recurrencepattern$failure_pattern == 'Local only recurrence')
+
+
+# --------------- #
+# Assemble figure #
+# --------------- #
+
+pg_km_clearance <- plot_grid(
+  survplot_rfs_by_clearance$plot +
+    scale_color_jama() +
+    theme(
+      legend.position = 'none'
+    ) +
+    annotate('text', x=75, y=0.95, label='Clearance', size=5) +
+    annotate('text', x=50, y=0.6, label='No clearance', size=5),
+  survplot_rfs_by_clearance$table + theme(legend.position = 'none') + theme_nothing(),
+  ncol = 1,
+  byrow = F,
+  align = 'v',
+  rel_heights = c(6,1),
+  label_x = -0.03
+)
+
+pg_cox_clearance <- plot_grid(
+  NULL,
+  p_cox_detectability,
+  nrow = 1,
+  rel_widths = c(1, 30)
+)
+
+plot_grid(
+  plot_grid(
+    pg_km_clearance,
+    pg_cox_clearance,
+    nrow = 1,
+    rel_widths = c(1,2),
+    labels = c('A', 'B')
+  ),
+  plot_grid(
+    pg_cox_recurrencepattern,
+    nrow = 1,
+    rel_widths = c(1,2),
+    labels = c('C')
+  ),
+  ncol = 1
+)
+
+
+```
+
+# F3: RTDclear enables dynamic updating
+
+```{r, eval=F, fig.width = 10, fig.height = 10}
+p_brms_update_1 <- plot_grid(
+  plotlist = lapply(
+    list_brms_updated_models[['HN3332']],
+    plot_posterior_prediction,
+    chosen_patient='newpatient',
+    ymax=1e6,
+    sigma=0.00001
+  ),
+  ncol = 1
+)
+
+p_brms_update_2 <- plot_grid(
+  plotlist = lapply(
+    list_brms_updated_models[['HN2960']],
+    plot_posterior_prediction,
+    chosen_patient='newpatient',
+    ymax=1e5,
+    sigma=0.00001
+  ),
+  ncol = 1
+)
+
+plot_grid(
+  p_brms_update_1,
+  p_brms_update_2,
+  nrow = 1,
+  labels = c('A', 'B')
+)
+```
+
+# F4: Dynamically updated risk prediction
+
+```{r, fig.width = 10, fig.height = 11}
+library(boot)
+
+followup_time = 60
+
+pd_riskprediction_full <- df_endrt %>%
+  inner_join(df_ctdna_clinical) %>%
+  inner_join(df_gtv_primary[, c('patient', 'gtv_primary')]) %>%
+  inner_join(df_gtv_nodes[, c('patient', 'sum_gtv_nodes')]) %>%
+  mutate(
+    log_gtvp = log10(1+gtv_primary),
+    log_gtvn = log10(1+sum_gtv_nodes)
+  )
+
+pd_riskprediction <- pd_riskprediction_full %>%
+  filter(
+    !((time_to_recurrence < followup_time) & (!recurrence))
+  ) %>%
+  mutate(
+    target_recurrence = recurrence & time_to_recurrence < followup_time
+  )
+
+set.seed(111)
+glmnet_recurrence_cv <- cv.glmnet(
+  x = as.matrix(pd_riskprediction[, c('pf_hpvdna', 'log_gtvp', 'log_gtvn')]),
+  y = pd_riskprediction$target_recurrence,
+  family = 'binomial',
+  nfolds = 10,
+  alpha = 1
+)
+coef(glmnet_recurrence_cv)
+
+pd_pfhpvdna_roc <- pd_riskprediction %>%
+  arrange(pf_hpvdna) %>%
+  mutate(
+    TN = cumsum(! target_recurrence),
+    FN = cumsum(target_recurrence)
+  ) %>%
+  arrange(-pf_hpvdna) %>%
+  mutate(
+    FP = cumsum(! target_recurrence),
+    TP = cumsum(target_recurrence)
+  ) %>%
+  arrange(pf_hpvdna) %>%
+  mutate(
+    FPR = FP / (FP + TN),
+    TPR = TP / (TP + FN),
+    F1 = TP / (TP + (FP + FN)/2)
+  )
+
+val_threshold_pfhpvdna <- pd_pfhpvdna_roc %>%
+  filter(F1 == max(F1)) %>%
+  filter(row_number() == 1) %>%
+  .$pf_hpvdna
+
+val_auc_pfhpvdna <- pd_pfhpvdna_roc %>%
+  select(pf_hpvdna, FPR, TPR) %>%
+  mutate(
+    prev_FPR = c(1, FPR[1:(n()-1)]),
+    diff = prev_FPR - FPR,
+    area = diff * TPR
+  ) %>%
+  .$area %>%
+  sum
+
+vector_risk_groups = c(-Inf, val_threshold_pfhpvdna, log10(val_min_hpv), Inf)
+vector_risk_group_names = c('Low', 'Intermediate', 'High')
+
+pd_riskprediction_logistic <- pd_riskprediction %>%
+  mutate(
+    risk_group = cut(
+      pf_hpvdna,
+      breaks = vector_risk_groups,
+      label = vector_risk_group_names,
+      include.lowest = T
+    ),
+    risk_group_numeric = as.numeric(risk_group)
+  )
+
+pd_riskgroup <- pd_riskprediction_full %>%
+  mutate(
+    risk_group = cut(
+      pf_hpvdna,
+      breaks = vector_risk_groups,
+      label = vector_risk_group_names,
+      include.lowest = T
+    ),
+    risk_group_numeric = as.numeric(risk_group)
+  )
+
+glm_risk_group <- glm(
+  target_recurrence ~ risk_group,
+  data = pd_riskprediction_logistic
+)
+
+survfit_riskgroup_5year <- survfit(
+  Surv(time_to_recurrence, recurrence) ~ risk_group,
+  data = pd_riskprediction_logistic
+)
+
+survfit_riskgroup <- survfit(
+  Surv(time_to_recurrence, recurrence) ~ risk_group,
+  data = pd_riskgroup
+)
+
+survfit_riskgroup_pairwise <- pairwise_survdiff(
+  Surv(time_to_recurrence, recurrence) ~ risk_group,
+  data = pd_riskgroup,
+  p.adjust.method = 'hochberg'
+)
+
+df_pairwise_survdiff_by_riskgroup <- survfit_riskgroup_pairwise$p.value %>%
+  as_tibble(rownames = 'level_1') %>%
+  gather(level_2, pvalue, -level_1) %>%
+  filter(!is.na(pvalue)) %>% 
+  mutate(
+    comparison = sprintf('%s vs. %s: ', level_1, level_2),
+    pval_string = pval_to_string(pvalue)
+  )
+
+coxph(
+  Surv(time_to_recurrence, recurrence) ~ risk_group_numeric + log_gtvn + log_gtvp,
+  pd_riskgroup
+) %>%
+  summary()
+
+palette_risk_group <- c(
+  "#374E55",
+  "#DF8F44",
+  "#00A1D5",
+  "#B24745"
+)
+
+p_hpv_by_risk_group <- pd_riskgroup %>%
+  ggplot(aes(
+    x = 0,
+    y = pf_hpvdna,
+    color = risk_group
+  )) +
+  geom_beeswarm(cex = 3) +
+  scale_color_manual(values = palette_risk_group) +
+  labs(
+    color = 'Risk group',
+    y = 'pfHPV DNA level'
+  ) + 
+  theme(legend.position = 'none') +
+  ggtitle('pfHPVDNA risk groups') +
+  xlim(-0.5, 0.5) +
+  theme(
+    panel.background = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.line.x = element_blank(),
+    panel.grid.major.y = element_line(linetype = 'solid'),
+    panel.grid.major.x = element_blank()
+  ) +
+  scale_y_continuous(
+    breaks = vector_risk_groups[2:(length(vector_risk_groups)-1)],
+    labels = c(
+      sprintf('Optimal\nthreshold\n%s', value_to_string(vector_risk_groups[2])),
+      sprintf('Detection\nthreshold\n%s', value_to_string(vector_risk_groups[3]))
+    )
+  )
+
+surv_fractions = summary(survfit_riskgroup, time = 60)$surv
+strata_text = gsub('.*?=', '', names(survfit_riskgroup$strata))
+surv_label = sprintf('5-yr RFS: %s', value_to_percent(surv_fractions))
+
+p_surv_by_risk_group <- ggsurvplot(
+  survfit_riskgroup,
+  risk.table = T,
+  palette = palette_risk_group,
+  tables.theme = theme_nothing(),
+  tables.col = "strata",
+  tables.y.text = F,
+  conf.int = T,
+  conf.int.alpha = 0.1
+)
+
+p_surv_by_risk_group_km <- p_surv_by_risk_group$plot +
+  annotate('text', x=61, y=surv_fractions[1]-0.03, label=strata_text[1], color = palette_risk_group[1], hjust=0) +
+  annotate('text', x=61, y=surv_fractions[2]-0.03, label=strata_text[2], color = palette_risk_group[2], hjust=0) +
+  annotate('text', x=61, y=surv_fractions[3]-0.03, label=strata_text[3], color = palette_risk_group[3], hjust=0) +
+  annotate('text', x=61, y=surv_fractions[1]-0.08, label=surv_label[1], color = palette_risk_group[1], hjust=0) +
+  annotate('text', x=61, y=surv_fractions[2]-0.08, label=surv_label[2], color = palette_risk_group[2], hjust=0) +
+  annotate('text', x=61, y=surv_fractions[3]-0.08, label=surv_label[3], color = palette_risk_group[3], hjust=0) +
+  geom_vline(xintercept = 60, color = 'Grey80') +
+  theme(legend.position = 'none') +
+  annotate('text', x = 35, y = 0.25, hjust = 1, vjust = 1, label = paste(df_pairwise_survdiff_by_riskgroup$comparison, collapse='\n')) +
+  annotate('text', x = 36, y = 0.25, hjust = 0, vjust = 1, label = paste(df_pairwise_survdiff_by_riskgroup$pval_string, collapse='\n')) 
+
+p_km_risk_group <- plot_grid(
+  p_surv_by_risk_group_km,
+  p_surv_by_risk_group$table,
+  ncol = 1,
+  align = 'v',
+  rel_heights = c(5,1)
+)
+
+# --------- #
+# ROC curve #
+# --------- #
+
+p_pfhpvdna_auroc <- pd_pfhpvdna_roc %>%
+  ggplot(aes(
+    x = FPR,
+    y = TPR
+  )) +
+  geom_abline(intercept = 0, slope = 1, color = 'Grey80') +
+  geom_path() +
+  geom_point(
+    data = pd_pfhpvdna_roc %>%
+      filter(F1 == max(F1)) %>%
+      filter(row_number() == 1),
+    size = 4
+  ) +
+  annotate(
+    'text',
+    x = 1,
+    y = 0.2,
+    label = sprintf('AUROC = %s', value_to_string(val_auc_pfhpvdna)),
+    size = 6,
+    hjust = 1
+  ) +
+  annotate(
+    'text',
+    x = 0.4,
+    y = 0.88,
+    label = sprintf(
+      'Optimal threshold\npfHPVDNA = %s', 
+      value_to_string(val_threshold_pfhpvdna)
+    ),
+    hjust = 0,
+    vjust = 1,
+    size = 4.5,
+    color = RColorBrewer::brewer.pal(3, 'Set1')[1]
+  ) +
+  theme(
+    panel.background = element_blank(),
+    panel.grid = element_blank()
+  )
+
+
+# --------------------------------- #
+# Logistic regression elasticnet CV #
+# --------------------------------- #
+
+p_glmnet_recurrence_cv <- tibble(
+  lambda = glmnet_recurrence_cv$lambda,
+  cv = glmnet_recurrence_cv$cvm,
+  cv_lo = glmnet_recurrence_cv$cvlo,
+  cv_up = glmnet_recurrence_cv$cvup
+) %>%
+  ggplot(aes(
+    x = lambda,
+    y = cv
+  )) +
+  geom_vline(
+    xintercept = glmnet_recurrence_cv$lambda.min,
+    color = 'black'
+  ) +
+  geom_vline(
+    xintercept = glmnet_recurrence_cv$lambda.1se,
+    color = 'black'
+  ) +
+  geom_errorbar(
+    aes(
+      ymin = cv_lo,
+      ymax = cv_up
+    ),
+    color = 'grey80',
+    width = 0
+  ) +
+  geom_point() +
+  scale_x_log10() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.line.x = element_blank(),
+    panel.background = element_blank()
+  ) + 
+  labs(
+    y = 'Mean CV error'
+  ) +
+  annotate(
+    'text',
+    x = glmnet_recurrence_cv$lambda.min * (0.95),
+    y = 1.35,
+    label = 'Min error',
+    hjust = 1
+  ) +
+  annotate(
+    'text',
+    x = glmnet_recurrence_cv$lambda.1se * (0.95),
+    y = 1.35,
+    label = '1 SE',
+    hjust = 1
+  ) +
+  ylim(min(glmnet_recurrence_cv$cvlo), 1.37)
+
+pd_glmnet_recurrence_coefficients <- coef(glmnet_recurrence_cv, s = glmnet_recurrence_cv$lambda) %>%
+  as.matrix() %>%
+  t() %>%
+  as_tibble() %>%
+  mutate(lambda = glmnet_recurrence_cv$lambda) %>%
+  gather(parameter, coefficient, -lambda) %>%
+  filter(parameter != '(Intercept)')
+
+p_glmnet_recurrence_coefficients <- pd_glmnet_recurrence_coefficients %>%
+  ggplot(aes(
+    x = lambda,
+    y = coefficient,
+    color = parameter
+  )) +
+  geom_vline(
+    xintercept = glmnet_recurrence_cv$lambda.min,
+    color = 'black'
+  ) +
+  geom_vline(
+    xintercept = glmnet_recurrence_cv$lambda.1se,
+    color = 'black'
+  ) +
+  geom_line() +
+  geom_text(
+    aes(
+      x = 0.0015,
+      y = coefficient + 0.05,
+      color = parameter,
+      label = parameter
+    ),
+    data = pd_glmnet_recurrence_coefficients %>%
+      filter(lambda == min(lambda)),
+    hjust = 0
+  ) +
+  scale_x_log10() +
+  labs(
+    x = 'Lambda',
+    y = 'Coefficient'
+  ) +
+  theme(panel.background = element_blank())
+
+pg_glmnet_cv <- plot_grid(
+  p_glmnet_recurrence_cv + ggtitle('ElasticNet Logistic Regression Cross-validation'),
+  p_glmnet_recurrence_coefficients + theme(legend.position = 'none'),
+  ncol = 1,
+  align = 'v'
+)
+
+# ------------------ #
+# Risk group changes #
+# ------------------ #
+
+pd_risk_group_by_eqd2 <- df_forecasting_summary %>%
+  mutate(
+    timepoint_riskgroup = cut(pf_hpvdna, breaks=vector_risk_groups, labels=vector_risk_group_names)
+  )
+
+p_risk_group_by_eqd2 <- pd_risk_group_by_eqd2 %>%
+  left_join(pd_riskgroup %>% select(patient, risk_group)) %>%
+  ggplot(aes(
+    x = EQD2,
+    y = pf_hpvdna,
+    color = risk_group
+  )) +
+  geom_line(aes(group = patient), alpha = 0.4, color = 'grey70') +
+  geom_point() +
+  scale_color_manual(values = palette_risk_group) +
+  facet_grid(.~risk_group) +
+  theme(
+    panel.background = element_blank(),
+    legend.position = 'none',
+    panel.grid.major.y = element_line(linetype = 'solid', color = 'Grey40')
+  ) +
+  labs(
+    x = 'RT dose (Gy, EQD2)',
+    y = 'Predicted follow-up\nHPV DNA level'
+  ) +
+  scale_y_continuous(
+    breaks = vector_risk_groups[2:(length(vector_risk_groups)-1)],
+    labels = c(
+      sprintf('Optimal\nthreshold\n%s', value_to_string(vector_risk_groups[2])),
+      sprintf('Detection\nthreshold\n%s', value_to_string(vector_risk_groups[3]))
+    )
+  )
+
+pd_timepoint_riskgroup <- df_forecasting_summary %>%
+  mutate(
+    timepoint_riskgroup = cut(pf_hpvdna, breaks=vector_risk_groups, labels=c('Low', 'Int', 'High'))
+  ) %>%
+  left_join(
+    df_ctdna_eqd2 %>% 
+      select(patient, EQD2, timepoint_name = timepoint) %>%
+      mutate(timepoint_name = factor(timepoint_name, levels = c('Baseline', 'Early RT', 'Mid RT', '3 months')))
+  ) %>%
+  distinct(patient, timepoint_name, timepoint_riskgroup)
+
+theme_riskgroup_changes <- theme(
+    legend.position = 'none',
+    panel.background = element_blank(),
+    panel.grid = element_blank()
+  )
+  
+p_riskgroup_change_midrt <- pd_timepoint_riskgroup %>%
+  spread(timepoint_name, timepoint_riskgroup) %>%
+  count(Baseline, `Mid RT`) %>%
+  right_join(crossing(Baseline = c('Low', 'Int', 'High'), `Mid RT` = c('Low', 'Int', 'High'))) %>%
+  replace_na(list(n = 0)) %>%
+  filter(!is.na(`Mid RT`)) %>%
+  mutate(
+    Baseline = factor(Baseline, levels = c('Low', 'Int', 'High')),
+    `Mid RT` = factor(`Mid RT`, levels = c('Low', 'Int', 'High'))
+  ) %>%
+  ggplot(aes(
+    x = Baseline,
+    y = `Mid RT`
+  )) +
+  geom_point(aes(size = n)) +
+  scale_size(range = c(0, 7)) +
+  geom_text(aes(label = n), nudge_y=0.5) +
+  theme_riskgroup_changes 
+
+p_riskgroup_change_endrt <- pd_timepoint_riskgroup %>%
+  spread(timepoint_name, timepoint_riskgroup) %>%
+  count(Baseline, `3 months`) %>%
+  right_join(crossing(Baseline = c('Low', 'Int', 'High'), `3 months` = c('Low', 'Int', 'High'))) %>%
+  replace_na(list(n = 0)) %>%
+  filter(!is.na(Baseline), !is.na(`3 months`)) %>%
+  mutate(
+    Baseline = factor(Baseline, levels = c('Low', 'Int', 'High')),
+    `3 months` = factor(`3 months`, levels = c('Low', 'Int', 'High'))
+  ) %>%
+  ggplot(aes(
+    x = Baseline,
+    y = `3 months`,
+  )) +
+  geom_point(aes(size = n)) +
+  scale_size(range = c(0, 7)) +
+  geom_text(aes(label = n), nudge_y=0.45) +
+  theme_riskgroup_changes
+
+plot_grid(
+  plot_grid(
+    plot_grid(
+      p_hpv_by_risk_group,
+      p_pfhpvdna_auroc,
+      ncol = 1,
+      rel_heights = c(1,1),
+      align = 'v',
+      labels = c('A', 'B')
+    ),
+    p_km_risk_group,
+    labels = c('', 'C'),
+    rel_widths = c(4,7)
+  ),
+  plot_grid(
+    p_risk_group_by_eqd2,
+    plot_grid(
+      p_riskgroup_change_midrt + theme(
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.x = element_blank()
+      ),
+      p_riskgroup_change_endrt,
+      ncol = 1,
+      rel_heights = c(0.8, 1)
+    ),
+    nrow = 1,
+    rel_widths = c(3,1),
+    labels = c('D', 'E')
+  ),
+  ncol = 1,
+  rel_heights = c(2,1.1)
+)
+```
+
+This Cox analysis is a key finding and should be part of some figure...
+
+```{r, fig.height = 6, fig.width = 12}
+survfit_by_midrt_risk_group <- survfit(
+  Surv(time_to_recurrence, recurrence) ~ timepoint_riskgroup,
+  data = pd_timepoint_riskgroup %>%
+    filter(timepoint_name == 'Mid RT') %>%
+    left_join(df_clinical_ctdna)
+)
+
+ggsurvplot(survfit_by_midrt_risk_group, pval = T)
+
+survfit_by_baseline_risk_group <- survfit(
+  Surv(time_to_recurrence, recurrence) ~ timepoint_riskgroup,
+  data = pd_timepoint_riskgroup %>%
+    filter(timepoint_name == 'Baseline') %>%
+    left_join(df_clinical_ctdna)
+)
+
+ggsurvplot(survfit_by_baseline_risk_group, pval = T)
+
+pd_cox_riskgroup <- pd_timepoint_riskgroup %>%
+  left_join(df_gtv_primary %>% select(patient, gtv_primary)) %>%
+  left_join(df_gtv_nodes %>% select(patient, sum_gtv_nodes)) %>%
+  left_join(df_ctdna_clinical) %>%
+  mutate(
+    log_gtvp = log10(1+gtv_primary),
+    log_gtvn = log10(1+sum_gtv_nodes),
+    stage_t_ajcc8_numeric = as.numeric(stage_t_ajcc8),
+    stage_n_ajcc8_numeric = as.numeric(stage_n_ajcc8),
+    riskgroup_numeric = as.numeric(timepoint_riskgroup)
+  )
+
+list_cox_riskgroup_gtv <- lapply(
+  c('Baseline', 'Mid RT', '3 months'),
+  function(my_timepoint) {
+    list(
+      cox_result = pd_cox_riskgroup %>%
+        filter(timepoint_name == my_timepoint) %>%
+        dplyr::rename(
+          `Risk group` = riskgroup_numeric,
+          `log GTVp` = log_gtvp,
+          `log GTVn` = log_gtvn
+        ) %>%
+        coxph(
+          Surv(time_to_recurrence, recurrence) ~ `Risk group` + `log GTVp` + `log GTVn`,
+          data = .
+        ),
+      timepoint = my_timepoint
+    )
+  })
+
+list_cox_riskgroup_stage <- lapply(
+  c('Baseline', 'Mid RT', '3 months'),
+  function(my_timepoint) {
+    list(
+      cox_result = pd_cox_riskgroup %>%
+        filter(timepoint_name == my_timepoint) %>%
+        dplyr::rename(
+          `Risk group` = riskgroup_numeric,
+          `T category` = stage_t_ajcc8_numeric,
+          `N category` = stage_n_ajcc8_numeric
+        ) %>%
+        coxph(
+          Surv(time_to_recurrence, recurrence) ~ `Risk group` + `T category` + `N category`,
+          data = .
+        ),
+      timepoint = my_timepoint
+    )
+  })
+
+
+plot_grid(
+  plotlist = lapply(
+    list_cox_riskgroup_gtv,
+    function(z) {
+      forestmodel::forest_model(z$cox_result) + ggtitle(z$timepoint)
+    }
+  ),
+  ncol = 1
+)
+
+plot_grid(
+  plotlist = lapply(
+    list_cox_riskgroup_stage,
+    function(z) {
+      forestmodel::forest_model(z$cox_result) + ggtitle(z$timepoint)
+    }
+  ),
+  ncol = 1
+)
+
+plot_grid(
+  forestmodel::forest_model(list_cox_riskgroup_gtv[[1]]$cox_result) + ggtitle('Baseline'),
+  forestmodel::forest_model(list_cox_riskgroup_gtv[[2]]$cox_result) + ggtitle('Mid RT'),
+  forestmodel::forest_model(list_cox_riskgroup_gtv[[3]]$cox_result) + ggtitle('Follow-up'),
+  ncol = 1
+)
+```
+
+```{r}
+df_forecasting_summary %>%
+  inner_join(
+    df_ctdna_eqd2 %>%
+      arrange(patient, EQD2) %>%
+      group_by(patient) %>% 
+      mutate(timepoint_idx = row_number()) %>% 
+      ungroup()
+  ) %>%
+  inner_join(pd_riskprediction) %>%
+  ggplot(aes(
+    x = EQD2,
+    y = median,
+    group = patient
+  )) +
+  geom_line() +
+  geom_point() +
+  scale_y_log10() +
+  facet_grid(.~recurrence)
+
+df_ctdna_clinical %>%
+  select(patient, clearance) %>%
+  inner_join(pd_riskprediction) %>%
+  filter(!clearance) %>%
+  filter(!target_recurrence) %>%
+  distinct(patient, clearance, target_recurrence, date_rt_end) %>%
+  left_join(df_ctdna_collectiondates) %>%
+  mutate(delay = date_ctdna_followup - date_rt_end) %>%
+  .$delay
+
+```
+
+```{r}
+pd_predict_key_timepoints %>%
+  select(patient, timepoint, predicted_ctdna) %>%
+  spread(timepoint, predicted_ctdna) %>%
+  left_join(pd_riskprediction %>% select(patient, target_recurrence)) %>%
+  ggplot(aes(
+    x = `Post-RT`,
+    y = `Follow-up`,
+    color = target_recurrence
+  )) +
+  geom_point() +
+  scale_y_log10() +
+  scale_x_log10()
+```
+
+# F5: Dynamically updated risk prediction
+
+```{r, fig.width = 4, fig.height = 6}
+pd_rtdclear_risk_group_change
+
+pd_rtdclear_risk_change %>%
+  arrange(-abs(change_risk_midrt))
+
+pd_rtdclear_eqd2 <- df_brms_forecasting_summary %>%
+  left_join(
+    df_ctdna_eqd2 %>% arrange(patient, EQD2) %>% group_by(patient) %>% mutate(timepoint = row_number())
+  ) %>%
+  mutate(
+    recurrence_risk = predict(glm_recurrence_joint, newdata=.) %>% {exp(.) / (1+exp(.)) * 100},
+    recurrence_risk_lci = predict(glm_recurrence_joint, newdata=tibble(RTDclear = lci)) %>% {exp(.) / (1+exp(.)) * 100},
+    recurrence_risk_uci = predict(glm_recurrence_joint, newdata=tibble(RTDclear = uci)) %>% {exp(.) / (1+exp(.)) * 100},
+    risk_group = cut(recurrence_risk, vector_risk_groups, labels = vector_risk_group_names)
+  )
+
+p_decreasing_1 <- plot_dynamic(
+  chosen_patient = 'HN2913',
+  plot_title = 'Decreasing risk due to\nslow rise (HN2913)',
+  brms_obj = brms_ctdna_eqd2_gtv,
+  data_ctdna = df_ctdna_eqd2,
+  data_rtdclear = pd_rtdclear_eqd2,
+  update_model = T
+)
+
+p_increasing_1 <- plot_dynamic(
+  chosen_patient = 'HN2186',
+  plot_title = 'Increased risk due to\nlate clearance (HN2186)',
+  brms_obj = brms_ctdna_eqd2_gtv,
+  data_ctdna = df_ctdna_eqd2,
+  data_rtdclear = pd_rtdclear_eqd2,
+  update_model = T
+)
+
+p_decreasing_1
+p_increasing_1
+```
+
+# SF: RT prescribed vs. actually delivered
+
+```{r rt_prescription, fig.height = 10, fig.width = 8}
+levels_prescription <- df_clinical_ctdna %>% count(rt_prescription) %>% arrange(-n) %>% .$rt_prescription
+
+plotdata_prescription_eqd2 <- df_clinical_ctdna %>%
+  select(patient, rt_prescription, rt_fractions) %>%
+  left_join(df_eqd2) %>%
+  filter(timepoint == '3 months') %>%
+  mutate(
+    rt_prescription = factor(rt_prescription, levels = levels_prescription),
+    planned_fractions = gsub('..\\/(..)f\\/.*', '\\1', rt_prescription) %>% as.integer()
+  )
+
+p_rt_prescription_all <- plotdata_prescription_eqd2 %>%
+  ggplot(aes(
+    x = rt_prescription,
+    y = EQD2
+  )) +
+  geom_boxplot(outlier.shape = NA) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  geom_point(aes(
+    x = rt_prescription,
+    y = EQD2
+  ),
+    data = plotdata_prescription_eqd2 %>% filter(rt_fractions != planned_fractions),
+    color = 'black'
+  ) +
+  geom_text_repel(aes(
+    label = paste(rt_fractions, 'Fx')
+  ), data = plotdata_prescription_eqd2 %>% filter(rt_fractions != planned_fractions)) +
+  geom_text(aes(
+      x = rt_prescription,
+      y = 66,
+      label = label
+    ), data = plotdata_prescription_eqd2 %>% count(rt_prescription) %>% mutate(label = sprintf('n = %s', n))
+  ) +
+  labs(
+    x = 'Prescribed RT regimen',
+    y = 'Actual EQD2 delivered'
+  )
+
+p_rt_prescription_included <- plotdata_prescription_eqd2 %>%
+  filter(patient %in% df_ctdna_clinical$patient) %>%
+  ggplot(aes(
+    x = rt_prescription,
+    y = EQD2
+  )) +
+  geom_boxplot(outlier.shape = NA) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  geom_point(aes(
+    x = rt_prescription,
+    y = EQD2
+  ),
+    data = plotdata_prescription_eqd2 %>%
+      filter(
+        patient %in% df_ctdna_clinical$patient,
+        rt_fractions != planned_fractions
+      ),
+    color = 'black'
+  ) +
+  geom_text_repel(aes(
+    label = paste(rt_fractions, 'Fx')
+  ), data = plotdata_prescription_eqd2 %>%
+    filter(
+      patient %in% df_ctdna_clinical$patient,
+      rt_fractions != planned_fractions
+    )
+  ) +
+  geom_text(aes(
+      x = rt_prescription,
+      y = 66,
+      label = label
+    ), data = plotdata_prescription_eqd2 %>%
+      filter(patient %in% df_ctdna_clinical$patient) %>%
+      count(rt_prescription) %>%
+      mutate(label = sprintf('n = %s', n))
+  ) +
+  labs(
+    x = 'Prescribed RT regimen',
+    y = 'Actual EQD2 delivered'
+  )
+
+plot_grid(
+  p_rt_prescription_all + ggtitle('All patients'),
+  p_rt_prescription_included + ggtitle('Included in HPV DNA analysis'),
+  labels = 'AUTO',
+  ncol = 1
+)
+```
+
+# ST: Included vs. excluded patients
+
+Below is a table summarizing the clinical characteristics of included
+vs. excluded participants. There are no obvious systematic differences
+between included and excluded patients, and patients with undetectable
+HPV DNA at baseline did not show lower stage disease or more likelihood
+of being smokers.
+
+```{r table_clinical_by_inclusion}
+plotdata_clinical_ctdna_inclusion <- df_clinical_ctdna %>%
+  inner_join(
+    df_ctdna %>%
+      spread(timepoint, ctdna)
+  ) %>%
+  mutate(
+    inclusion_status = case_when(
+      is.na(`3 months`) | is.na(`Mid RT`) | Baseline == 0 ~ 'Excluded',
+      TRUE ~ 'Included'
+    ) %>% factor(levels = c('Included', 'Excluded')),
+    exclusion_reason = case_when(
+      is.na(`3 months`) ~ 'Missing follow-up',
+      is.na(`Mid RT`) ~ 'Missing mid-RT',
+      Baseline == 0 ~ 'No HPV ctDNA at baseline (excluded)',
+      TRUE ~ 'Included in all analyses'
+    ),
+    hpv_detectability = case_when(
+      Baseline == 0 ~ 'Undetectable',
+      TRUE ~ 'Detectable'
+    )
+  )
+
+table_cohort_by_exclusion_reason <- plotdata_clinical_ctdna_inclusion %>%
+  tbl_summary(
+    by = 'exclusion_reason',
+    include = all_of(c('exclusion_reason', array_full_table_variables)),
+    label = array_full_table_labels
+  )
+table_cohort_by_exclusion_reason
+
+table_cohort_by_baseline_detection <- plotdata_clinical_ctdna_inclusion %>%
+  tbl_summary(
+    by = 'hpv_detectability',
+    include = all_of(c('hpv_detectability', array_full_table_variables)),
+    label = array_full_table_labels
+  ) %>%
+  add_p(list(all_continuous() ~ "wilcox.test", all_categorical() ~ "chisq.test"))
+table_cohort_by_baseline_detection
+
+table_cohort_by_inclusion_status <- plotdata_clinical_ctdna_inclusion %>%
+  tbl_summary(
+    by = 'inclusion_status',
+    include = all_of(c('inclusion_status', array_full_table_variables)),
+    label = array_full_table_labels
+  ) %>%
+  add_p(list(all_continuous() ~ "wilcox.test", all_categorical() ~ "chisq.test"))
+table_cohort_by_inclusion_status
+
+# Export tables to HTML
+table_cohort_by_exclusion_reason %>%
+  as_flex_table() %>%
+  save_as_html(path='figures/table_cohort_by_exclusion_reason.html')
+
+table_cohort_by_baseline_detection %>%
+  as_flex_table() %>%
+  save_as_html(path='figures/table_cohort_by_baseline_detection.html')
+
+table_cohort_by_inclusion_status %>%
+  as_flex_table() %>%
+  save_as_html(path='figures/table_cohort_by_inclusion_status.html')
+
+# Extract some variables
+val_smoking_status_by_hpv_detectability <- chisq.test(
+  x = plotdata_clinical_ctdna_inclusion$hpv_detectability,
+  y = plotdata_clinical_ctdna_inclusion$smoking_status
+) %>% .$p.value %>% signif(2)
+
+val_t_category_by_hpv_detectability <- chisq.test(
+  x = plotdata_clinical_ctdna_inclusion$hpv_detectability,
+  y = plotdata_clinical_ctdna_inclusion$stage_t_ajcc8
+) %>% .$p.value %>% signif(2)
+
+```
+
+# SF: Single arm KM curves
+
+Single-arm Kaplan-Meier plots illustrating time-to-event outcomes for
+RFS, PFS, and OS.
+
+```{r clinical_survival, fig.width = 14, fig.height = 6}
+list_survfit_singlearm_all <- list(
+  RFS = survfit(surv_recurrence ~ 1, data = df_clinical_ctdna),
+  PFS = survfit(surv_progression ~ 1, data = df_clinical_ctdna),
+  OS = survfit(surv_overall ~ 1, data = df_clinical_ctdna)
+)
+
+list_survfit_singlearm_included <- list(
+  RFS = survfit(
+    surv_recurrence ~ 1,
+    data = df_ctdna_clinical
+  ),
+  PFS = survfit(surv_progression ~ 1, data = df_ctdna_clinical),
+  OS = survfit(surv_overall ~ 1, data = df_ctdna_clinical)
+)
+
+plot_survival_singlearm_all <- ggsurvplot_combine(
+    list_survfit_singlearm_all
+  ) %>% .$plot
+
+get_survplot <- function(df, surv, factor, title) {
+  survfit_obj <- survfit(
+    surv ~ factor
+  )
+  p_survfit <- ggsurvplot(
+    survfit_obj,
+    pval = T,
+    palette = RColorBrewer::brewer.pal(name='Set1', n=3)[1:2]
+  ) + ggtitle(title)
+  return(p_survfit$plot)
+}
+
+pd_survival_by_baseline <- df_clinical_ctdna %>% 
+  left_join(df_ctdna_wide) %>%
+  mutate(
+    baseline = if_else(ctdna_baseline > 0, 'Detectable', 'Undetectable')
+  )
+
+survfit_rfs_baseline_detectable <- survfit(
+  surv_recurrence ~ baseline,
+  data = pd_survival_by_baseline
+)
+p_surv_rfs_baseline_detectable <- ggsurvplot(survfit_rfs_baseline_detectable, pval = T) + ggtitle('RFS by baseline HPV DNA')
+
+
+survfit_pfs_baseline_detectable <- survfit(
+  surv_progression ~ baseline,
+  data = pd_survival_by_baseline
+)
+p_surv_pfs_baseline_detectable <- ggsurvplot(survfit_pfs_baseline_detectable, pval = T) + ggtitle('PFS by baseline HPV DNA')
+
+survfit_os_baseline_detectable <- survfit(
+  surv_overall ~ baseline,
+  data = df_clinical_ctdna %>% 
+    left_join(df_ctdna_wide) %>%
+    mutate(
+      baseline = if_else(ctdna_baseline > 0, 'Detectable', 'Undetectable')
+    )
+)
+p_surv_os_baseline_detectable <- ggsurvplot(survfit_os_baseline_detectable, pval = T) + ggtitle('OS by baseline HPV DNA')
+
+survfit_rfs_included <- survfit(
+  surv_recurrence ~ included,
+  data = df_clinical_ctdna %>% mutate(included = ! patient %in% df_exclude$patient)
+)
+p_surv_rfs_by_inclusion <- ggsurvplot(survfit_rfs_included, pval=T) + ggtitle('RFS by inclusion status')
+
+survfit_pfs_included <- survfit(
+  surv_progression ~ included,
+  data = df_clinical_ctdna %>% mutate(included = ! patient %in% df_exclude$patient)
+)
+p_surv_pfs_by_inclusion <- ggsurvplot(survfit_pfs_included, pval=T) + ggtitle('PFS by inclusion status')
+
+survfit_os_included <- survfit(
+  surv_overall ~ included,
+  data = df_clinical_ctdna %>% mutate(included = ! patient %in% df_exclude$patient)
+)
+p_surv_os_by_inclusion <- ggsurvplot(survfit_os_included, pval=T) + ggtitle('OS by inclusion status')
+
+val_ctdna_allpatients_n <- df_clinical_ctdna$patient %>% unique %>% length
+val_ctdna_all_patients_recurrent <- sum(df_clinical_ctdna$recurrence)
+val_ctdna_baselinedetectable_n <- df_ctdna_clinical$patient %>% unique %>% length
+val_ctdna_baselinedetectable_recurrent <- df_ctdna_clinical$recurrence %>% sum
+
+val_n_recurrence <- sum(df_ctdna_clinical$recurrence)
+val_percent_recurrence <- round(sum(df_ctdna_clinical$recurrence) / nrow(df_ctdna_clinical) * 100)
+val_n_death <- sum(df_ctdna_clinical$death)
+val_percent_death <- round(sum(df_ctdna_clinical$death) / nrow(df_ctdna_clinical) * 100)
+
+val_median_fu <- df_ctdna_clinical %>%
+  filter(! recurrence, ! death) %>%
+  .$time_to_recurrence %>%
+  mean %>%
+  round()
+
+val_range_fu <- df_ctdna_clinical %>%
+  filter(! recurrence, ! death) %>%
+  .$time_to_recurrence %>%
+  range() %>%
+  round() %>%
+  paste(collapse = '-')
+
+val_IQR_fu <- df_ctdna_clinical %>%
+  filter(! recurrence, ! death) %>%
+  .$time_to_recurrence %>%
+  IQR() %>%
+  round(1)
+
+table_survival_singlearm_summary_3year <- as_tibble(lapply(list_survfit_singlearm_all, function(z) {summary(z, 36)$surv})) %>% 
+  mutate(Group = 'All patients', n = df_clinical_ctdna$patient %>% unique %>% length) %>%
+  bind_rows(
+    as_tibble(lapply(list_survfit_singlearm_included, function(z) {summary(z, 36)$surv})) %>%
+      mutate(Group = 'Included patients', n = df_ctdna_clinical$patient %>% unique %>% length)
+  ) %>%
+  mutate(Milestone = '3 year') %>%
+  select(Group, n, Milestone, everything())
+
+table_survival_singlearm_summary_5year <- as_tibble(lapply(list_survfit_singlearm_all, function(z) {summary(z, 60)$surv})) %>% 
+  mutate(Group = 'All patients', n = df_clinical_ctdna$patient %>% unique %>% length) %>%
+  bind_rows(
+    as_tibble(lapply(list_survfit_singlearm_included, function(z) {summary(z, 60)$surv})) %>%
+      mutate(Group = 'Included patients', n = df_ctdna_clinical$patient %>% unique %>% length)
+  ) %>%
+  mutate(Milestone = '5 year') %>%
+  select(Group, n, Milestone, everything())
+
+table_survival_singlearm_summary_3year %>%
+  bind_rows(table_survival_singlearm_summary_5year) %>%
+  pander()
+
+val_percent_rfs_3year <- (table_survival_singlearm_summary_3year %>%
+  filter(Group == 'Included patients') %>%
+  .$RFS * 100) %>% round(1)
+
+val_percent_rfs_5year <- (table_survival_singlearm_summary_5year %>%
+  filter(Group == 'Included patients') %>%
+  .$RFS * 100) %>% round(1)
+
+plot_grid(
+  p_surv_rfs_baseline_detectable$plot + theme(legend.position = 'none'),
+  p_surv_pfs_baseline_detectable$plot + theme(legend.position = 'none'),
+  p_surv_os_baseline_detectable$plot + theme(legend.position = 'none'),
+  get_legend(
+    p_surv_os_baseline_detectable$plot + theme(legend.position = 'right')
+  ),
+  p_surv_rfs_by_inclusion$plot + theme(legend.position = 'none'),
+  p_surv_pfs_by_inclusion$plot + theme(legend.position = 'none'),
+  p_surv_os_by_inclusion$plot + theme(legend.position = 'none'),
+  get_legend(
+    p_surv_os_by_inclusion$plot + theme(legend.position = 'right')
+  ),
+  ncol = 4,
+  rel_widths = c(2,2,2,1)
+)
+
+```
+
+# SF: Traceplots and PPCs for BRMS GTV model
+
+Trace plots of the BRMS model.
+
+```{r}
+plot_trace(df_brms_gtv_fixedeffects)
+```
+
+```{r traceplots_gtv_model, fig.width = 10, fig.height = 10}
+p_traceplots <- plot_trace(df_brms_ctdna_gtv_eqd2_fixedeffects)
+pl_posterior_predictive <- plot_posterior_predictive_check(brms_ctdna_eqd2_gtv)
+
+plot_grid(
+  p_traceplots +
+    labs(
+      x = 'Iteration',
+      y = 'Estimate'
+    ),
+  plot_grid(
+    plotlist_posterior_predictive$scatterplot,
+    plotlist_posterior_predictive$lineplot,
+    nrow = 1,
+    rel_widths = c(3,5)
+  ),
+  ncol = 1,
+  rel_heights = c(5,3),
+  labels = c('A', 'B')
+)
+
+val_brms_gtv_rhat_max <- max(rhat(brms_ctdna_eqd2_gtv), na.rm=T) %>%
+  value_to_string()
+```
+
+# SF: Bayesian model estimates for the Stage model
+
+```{r brms_conditionaleffects_stage_model, fig.height = 6.5, fig.width = 13}
+p_fixedeffects <- plot_fixedeffects_compact(
+  df_brms_ctdna_stage_eqd2_fixedeffects
+)
+
+plotlist_posterior_predictive <- plot_posterior_predictive_check(brms_ctdna_eqd2_stage)
+
+plot_conditional_effects_t <- plot_conditional_effects_eqd2(brms_ctdna_eqd2_stage, tibble(t_category = c(1,2,3,4), cond__ = c('T1', 'T2', 'T3', 'T4')), 'T category')
+plot_conditional_effects_n <- plot_conditional_effects_eqd2(brms_ctdna_eqd2_stage, tibble(n_category = c(1,2,3,4), cond__ = c('N0', 'N1', 'N2', 'N3')), 'N category')
+plot_conditional_effects_chemo <- plot_conditional_effects_eqd2(brms_ctdna_eqd2_stage, tibble(chemotherapy = c(0, 1), cond__ = c('RT', 'CRT')), 'Chemo')
+
+plot_conditional_effects_t_zi <- plot_conditional_effects_eqd2(brms_ctdna_eqd2_stage, tibble(t_category = c(1,2,3,4), cond__ = c('T1', 'T2', 'T3', 'T4')), 'T category', dpar='zi') + labs(y = 'p(undetectable)')
+plot_conditional_effects_n_zi <- plot_conditional_effects_eqd2(brms_ctdna_eqd2_stage, tibble(n_category = c(1,2,3,4), cond__ = c('N0', 'N1', 'N2', 'N3')), 'N category', dpar='zi') + labs(y = 'p(undetectable)')
+plot_conditional_effects_chemo_zi <- plot_conditional_effects_eqd2(brms_ctdna_eqd2_stage, tibble(chemotherapy = c(0, 1), cond__ = c('RT', 'CRT')), 'Chemo', dpar='zi') + labs(y = 'p(undetectable)')
+
+plot_grid(
+  plot_grid(
+    p_fixedeffects,
+    plot_grid(
+      plot_conditional_effects_t + theme(legend.position = 'none'),
+      plot_conditional_effects_t_zi + theme(legend.position = 'none'),
+      get_legend(plot_conditional_effects_t),
+      plot_conditional_effects_n + theme(legend.position = 'none'),
+      plot_conditional_effects_n_zi + theme(legend.position = 'none'),
+      get_legend(plot_conditional_effects_n),
+      plot_conditional_effects_chemo + theme(legend.position = 'none'),
+      plot_conditional_effects_chemo_zi + theme(legend.position = 'none'),
+      get_legend(plot_conditional_effects_chemo),
+      align = 'vh',
+      ncol = 3,
+      rel_widths = c(2,2,1),
+      labels = c('B', 'C')
+    ),
+    nrow = 1,
+    labels = c('A')
+  ),
+  ncol = 1,
+  rel_heights = c(6,3)
+)
+
+```
+
+# SF: Bayesian model traceplots and posterior predictive checks for Stage model
+
+```{r brms_traceplots_stage_model, fig.width = 10, fig.height = 10}
+p_traceplots <- plot_trace(df_brms_ctdna_stage_eqd2_fixedeffects)
+pl_posterior_predictive <- plot_posterior_predictive_check(brms_ctdna_eqd2_stage)
+
+plot_grid(
+  p_traceplots +
+    labs(
+      x = 'Iteration',
+      y = 'Estimate'
+    ),
+  plot_grid(
+    plotlist_posterior_predictive$scatterplot,
+    plotlist_posterior_predictive$lineplot,
+    nrow = 1,
+    rel_widths = c(3,5)
+  ),
+  ncol = 1,
+  rel_heights = c(5,3),
+  labels = c('A', 'B')
+)
+
+val_brms_stage_rhat_max <- max(rhat(brms_ctdna_eqd2_stage), na.rm=T) %>%
+  value_to_string()
+```
+
+# SF: Verifying consequences of correlated random effects
+
+```{r}
+df_expected <- predict(
+  brms_ctdna_eqd2_gtv,
+  #re_formula = NA,
+  newdata = brms_ctdna_eqd2_gtv$data %>% mutate(patient = paste('new', patient)),
+  allow_new_levels = T
+) %>%
+  as_tibble()
+
+
+df_predicted <- predict(
+  brms_ctdna_eqd2_gtv
+) %>%
+  as_tibble()
+
+
+plotdata_midrtexpected_detectable <- brms_ctdna_eqd2_gtv$data %>%
+  mutate(
+    expected = df_expected$Estimate
+  ) %>%
+  right_join(
+    df_ctdna_eqd2 %>%
+      filter(timepoint == 'Mid RT') %>%
+      select(patient, EQD2)
+  ) %>%
+  inner_join(
+    df_ctdna_eqd2 %>%
+      filter(timepoint == '3 months') %>%
+      select(patient, followup_ctdna = ctdna)
+  ) %>%
+  mutate(
+    lfc_ctdna = log10(1 + ctdna) - log10(1 + expected),
+    mid_rt_expect = if_else(ctdna > expected, 'Higher', 'Lower'),
+    post_rt_detect = if_else(followup_ctdna > 0, 'Detectable', 'Undetectable')
+  ) %>%
+  count(mid_rt_expect, post_rt_detect) %>%
+  filter(!is.na(mid_rt_expect)) %>%
+  group_by(mid_rt_expect) %>%
+  mutate(percent = signif(n / sum(n) * 100, 3) %>% paste0('%')) %>%
+  ungroup()
+
+chisq_midrt_expect <- plotdata_midrtexpected_detectable %>% select(-percent) %>% spread(post_rt_detect, n) %>% column_to_rownames('mid_rt_expect') %>% chisq.test
+
+p_midexpect_postdetect <- plotdata_midrtexpected_detectable %>%
+  ggplot(aes(
+    x = mid_rt_expect,
+    y = n,
+    fill = post_rt_detect,
+    label = percent
+  )) +
+  geom_bar(
+    stat = 'identity',
+    position = 'stack'
+  ) +
+  geom_text(position = position_stack(vjust = 0.5)) +
+  #ylim(0, 140) +
+  geom_signif(
+    comparisons = list(c("Higher", "Lower")),
+    annotations = sprintf('Chi-square p = %s', signif(chisq_midrt_expect$p.value, 2)),
+    margin_top = 0.15
+  ) +
+  labs(
+    x = 'Mid-RT HPV DNA\nvs. Expectation',
+    y = 'Patient count',
+    fill = 'Post-RT\nHPV DNA'
+  )
+
+val_lowmid_clearance_percent = plotdata_midrtexpected_detectable %>% filter(mid_rt_expect == 'Lower', post_rt_detect == 'Undetectable') %>% .$percent
+val_highmid_clearance_percent = plotdata_midrtexpected_detectable %>% filter(mid_rt_expect == 'Higher', post_rt_detect == 'Undetectable') %>% .$percent
+val_midexpect_clearance_chisq_p = signif(chisq_midrt_expect$p.value, 2)
+
+p_midexpect_postdetect
+```
+
+```{r}
+df_ctdna_clinical %>%
+  mutate(
+    direction = if_else(`Mid RT` > Baseline, 'Increase', 'Decrease')
+  ) %>%
+  count(direction, clearance) %>%
+  filter(!is.na(clearance), !is.na(direction)) %>%
+  group_by(direction) %>%
+  mutate(fraction = n / sum(n))
+```
+
+# SF: Verifying the prediction of baseline HPV DNA levels
+
+```{r hpv_dna_by_gtv, fig.width = 8, fig.height = 8}
+glm_primary_lymphnode_volume_ctdna_baseline <- glm(
+  log_baseline ~ `log GTVp` + `log GTVn`,
+  data = df_glm_primary_lymphnode_volume_ctdna %>%
+    dplyr::rename(
+      `log GTVp` = log_primary,
+      `log GTVn` = log_lymphnode
+    ),
+  family = 'gaussian'
+)
+
+plot_scatter_primary_lymphnode_ctdna <- df_glm_primary_lymphnode_volume_ctdna %>%
+  ggplot(aes(
+    x = gtv_primary,
+    y = sum_gtv_nodes,
+    color = Baseline
+  )) +
+  geom_point(size = 2) +
+  scale_x_continuous(trans = scales::pseudo_log_trans(sigma = 1, base = exp(1))) +
+  scale_y_continuous(trans = scales::pseudo_log_trans(sigma = 1, base = exp(1))) +
+  scale_color_distiller(palette = 'RdYlBu', trans = 'log10') +
+  labs(
+    x = 'GTVp',
+    y = 'Sum GTVn',
+    color = 'Baseline HPV DNA'
+  ) +
+  theme(panel.background = element_blank())
+
+plot_glm_primary_lymphnode_volume_ctdna_baseline <- glm_primary_lymphnode_volume_ctdna_baseline %>%
+  forestmodel::forest_model(recalculate_width = dev.size()[2])
+
+plot_grid(
+  plot_grid(
+    plot_grid(
+      plot_scatter_primary_lymphnode_ctdna,
+      nrow = 1, rel_widths = c(2,2,1)
+    ),
+    plot_glm_primary_lymphnode_volume_ctdna_baseline,
+    ncol = 1, rel_heights = c(4,2)
+  )
+)
+```
+
+### Comparison to Chera et al. 2019
+
+```{r}
+plotdata_chera_eqd2 <- tibble(
+  fraction = 1:30,
+  mean_dose_per_fraction = 2,
+  cumulative_dose = mean_dose_per_fraction * fraction,
+  cumulative_days = floor((fraction-1) / 5) * 7 - floor((fraction - 1) / 5) * 5 + fraction
+) %>%
+  mutate(
+    EQD2 = cumulative_dose * (1 + mean_dose_per_fraction / 10) - if_else(cumulative_days < 28, 0, ((log(2) / 0.35) * (cumulative_days - 28) / 3))
+  )
+
+val_chera_week4_eqd2 <- plotdata_chera_eqd2 %>%
+  filter(cumulative_days == 26) %>%
+  .$EQD2
+```
+
+# SF: Prognostic value of stage vs. GTV
+
+```{r ctdna_baseline_imaging_prognosis, fig.width = 8, fig.height = 6}
+cox_stage_only_discrete <- coxph(
+  Surv(time_to_recurrence, recurrence) ~ `T category` + `N category`,
+  data = plotdata_ctdna_radiomic_joint %>%
+    mutate(
+      `T category` = case_when(
+        stage_t_ajcc8 %in% c('T1', 'T2') ~ 'T1-2',
+        stage_t_ajcc8 %in% c('T3', 'T4') ~ 'T3-4'
+      ),
+      `N category` = case_when(
+        stage_n_ajcc8 %in% c('N1', 'N0') ~ 'N0-1',
+        stage_n_ajcc8 %in% c('N2', 'N3') ~ 'N2-3'
+      ),
+    ),
+  x = T
+)
+
+cox_stage_only_ordinal <- coxph(
+  Surv(time_to_recurrence, recurrence) ~ `T category` + `N category`,
+  data = plotdata_ctdna_radiomic_joint %>%
+    mutate(
+      `T category` = as.integer(stage_t_ajcc8),
+      `N category` = as.integer(stage_n_ajcc8)
+    ),
+  x = T
+)
+
+cox_gtv_only <- coxph(
+  Surv(time_to_recurrence, recurrence) ~ `log GTVp` + `log GTVn`,
+  data = plotdata_ctdna_radiomic_joint %>%
+    dplyr::rename(
+        `log GTVp` = `log(1+GTVp)`,
+        `log GTVn` = `log(1+GTVn)`
+      ),
+  x = T
+)
+
+forestmodel::forest_model(
+  model_list = list(
+    cox_stage_only_discrete,
+    cox_stage_only_ordinal,
+    cox_gtv_only
+  ),
+  show_global_p = 'bottom'
+) +
+  geom_hline(yintercept = 3.5, color = 'black', size = 3) +
+  geom_hline(yintercept = 6.5, color = 'black', size = 3)
+```
+
+### Dynamic Risk Prediction Model
+
+```{r dynamic_risk_model, eval=F}
+df_dynamic_risk_prediction <- df_brms_forecasting_summary %>%
+  left_join(
+    df_gtv_primary %>% select(patient, gtv_primary)
+  ) %>%
+  left_join(
+    df_gtv_nodes %>% select(patient, sum_gtv_nodes)
+  ) %>%
+  mutate(
+    `log GTVp` = log10(1+gtv_primary),
+    `log GTVn` = log10(1+sum_gtv_nodes)
+  ) %>%
+  left_join(
+    df_clinical_ctdna %>% select(patient, rt_regimen)
+  )
+
+rtdclear_prediction <- predict(
+  cox_eqd2_detectability,
+  newdata = df_dynamic_risk_prediction
+)
+uci_prediction <- predict(
+  cox_eqd2_detectability,
+  newdata = df_dynamic_risk_prediction %>% select(-RTDclear) %>% dplyr::rename(RTDclear = uci)
+)
+lci_prediction <- predict(
+  cox_eqd2_detectability,
+  newdata = df_dynamic_risk_prediction %>% select(-RTDclear) %>% dplyr::rename(RTDclear = lci)
+)
+
+plotdata_dynamic_risk_prediction <- df_dynamic_risk_prediction %>%
+  mutate(
+    prediction = 100 * val_five_year_risk * exp(cox_rtdclear_gtv_prediction$coefficients * (rtdclear_prediction - mean(plotdata_global_prediction$prediction))),
+    uci_prediction = 100 * val_five_year_risk * exp(cox_rtdclear_gtv_prediction$coefficients * (uci_prediction - mean(plotdata_global_prediction$prediction))),
+    lci_prediction = 100 * val_five_year_risk * exp(cox_rtdclear_gtv_prediction$coefficients * (lci_prediction - mean(plotdata_global_prediction$prediction)))
+  ) %>%
+  left_join(
+    df_brms_forecasting_summary %>%
+      dplyr::rename(
+        RTDclear_uci = uci,
+        RTDclear_lci = lci
+      )
+  ) %>%
+  left_join(
+    df_ctdna_eqd2 %>%
+      distinct(patient, EQD2, ctdna) %>%
+      group_by(patient) %>%
+      arrange(EQD2) %>%
+      mutate(timepoint = row_number()) %>%
+      ungroup()
+  ) %>%
+  group_by(patient) %>%
+  mutate(
+    timepoint_name = case_when(
+      timepoint == 1 ~ 'Baseline',
+      timepoint == max(timepoint) ~ 'Follow-up',
+      timepoint == 2 & max(timepoint) == 4 ~ 'Early RT',
+      timepoint == 3 & max(timepoint) == 4 ~ 'Mid-RT',
+      timepoint == 2 & max(timepoint) == 3 ~ 'Mid-RT'
+    ) %>%
+      factor(levels = c('Baseline', 'Early RT', 'Mid-RT', 'Follow-up'))
+  ) %>%
+  ungroup()
+
+```
+
+```{r dynamic_risk_prediction_singlepatient, fig.height = 8, fig.width = 6, eval=F}
+plot_dynamic_modeling <- function(df_forecasting, df_detectability_smoothed, selected_patient) {
+  pd_expected <- brms_ctdna_eqd2_gtv$data %>%
+    filter(patient == selected_patient, EQD2 == 0) %>%
+    mutate(patient = 'newpatient') %>%
+    select(-ctdna, -EQD2) %>%
+    crossing(EQD2 = seq(0, max(brms_ctdna_eqd2_gtv$data %>% filter(patient == selected_patient) %>% .$EQD2), 1)) %>%
+    bind_cols(
+      posterior_predict(brms_ctdna_eqd2_gtv, ., allow_new_levels = T) %>%
+        plyr::adply(2, function(z) {
+          tibble(
+            expected_ctdna = median(z[z > 0]),
+            p_clear = sum(z == 0) / length(z)
+          )
+        })
+    ) %>%
+    mutate(
+      ctdna = if_else(
+        p_clear > 0.5,
+        0,
+        smooth.spline(EQD2, expected_ctdna, df=10) %>%
+          predict() %>% 
+          .$y
+      )
+    )
+  
+  p_ctdna <- df_forecasting %>%
+    filter(patient == selected_patient) %>%
+    mutate(condition = 'Actual') %>%
+    ggplot(aes(
+      x = EQD2,
+      y = ctdna,
+      label = round(ctdna, 1)
+    )) +
+    geom_line(
+      mapping = aes(
+        x = EQD2,
+        y = ctdna
+      ),
+      data = pd_expected,
+      color = '#8888CC'
+    ) +
+    geom_line() +
+    geom_point() +
+    geom_text_repel() +
+    labs(
+      x = 'EQD2',
+      y = 'HPV DNA'
+    ) +
+    annotate(
+      geom = 'text',
+      color = '#8888CC',
+      label = 'Expected',
+      x = 4,
+      y = pd_expected %>% filter(EQD2 == 2) %>% .$ctdna,
+      hjust = 0
+    ) +
+    scale_y_log10()
+  
+  p_rtdclear <- df_forecasting %>%
+    filter(patient == selected_patient) %>%
+    ggplot(aes(
+      x = EQD2,
+      y = RTDclear,
+      ymin = RTDclear_lci,
+      ymax = RTDclear_uci
+    )) +
+    geom_errorbar(width = 0) +
+    geom_line() +
+    geom_point() +
+    labs(
+      x = 'EQD2',
+      y = 'RTDclear'
+    )
+  
+  p_coxpredict <- df_forecasting %>%
+    filter(patient == selected_patient) %>%
+    ggplot(aes(
+      x = EQD2,
+      y = prediction,
+      ymin = lci_prediction,
+      ymax = uci_prediction
+    )) +
+    geom_errorbar(width = 0) +
+    geom_line() +
+    geom_point() +
+    labs(
+      x = 'EQD2',
+      y = 'Risk\nPrediction'
+    )
+  
+  p_detectability_curves <- df_detectability_smoothed %>%
+    filter(patient == selected_patient) %>%
+    ggplot(aes(
+      x = EQD2,
+      y = smoothed,
+      group = timepoint
+    )) +
+    geom_line() +
+    facet_grid(. ~ timepoint) +
+    geom_point(
+      data = df_forecasting %>%
+        filter(patient == selected_patient) %>%
+        select(patient, RTDclear, RTDclear_lci, RTDclear_uci, timepoint) %>%
+        gather(type, EQD2, -patient, -timepoint) %>%
+        mutate(
+          smoothed = case_when(
+            type == 'RTDclear' ~ 0.8,
+            type == 'RTDclear_lci' ~ 0.5,
+            type == 'RTDclear_uci' ~ 0.95
+          )
+        )
+    ) +
+    labs(
+      x = 'EQD2',
+      y = 'p(detection)'
+    )
+  
+  p_gtv_primary <- df_forecasting %>%
+    ggplot(aes(
+      x = gtv_primary
+    )) +
+    geom_histogram() +
+    scale_x_log10() +
+    geom_vline(
+      xintercept = df_forecasting %>% filter(patient == selected_patient) %>% .$gtv_primary,
+      color = 'black'
+    ) +
+    labs(
+      y = 'patients',
+      x = 'GTVp'
+    ) +
+    ggtitle(
+      sprintf(
+        'GTVp: %s cc',
+        round(df_forecasting %>% filter(patient == selected_patient) %>% .$gtv_primary + 1, 2)
+      )
+    ) +
+    theme(plot.title = element_text(size=12))
+  
+  p_gtv_nodes <- df_forecasting %>%
+    ggplot(aes(
+      x = sum_gtv_nodes
+    )) +
+    geom_histogram() +
+    scale_x_log10() +
+    geom_vline(
+      xintercept = df_forecasting %>% filter(patient == selected_patient) %>% .$sum_gtv_nodes,
+      color = 'black'
+    ) +
+    labs(x = 'GTVn', y = 'patients') +
+    ggtitle(
+      sprintf(
+        'GTVn: %s cc',
+        round(df_forecasting %>% filter(patient == selected_patient) %>% .$sum_gtv_nodes + 1, 2)
+      )
+    ) +
+    theme(plot.title = element_text(size=12))
+  
+  p_treatment <- plotdata_dynamic_risk_prediction %>%
+    filter(patient == selected_patient) %>%
+    distinct(rt_regimen) %>%
+    mutate(rt_regimen = sprintf('Treatment:\n%s', rt_regimen)) %>%
+    ggplot(aes(
+      x = 0,
+      y = 0,
+      label = rt_regimen
+    )) +
+    geom_text(size = 8) +
+    theme_nothing()
+
+  plot_grid(
+    plot_grid(
+      p_gtv_primary,
+      p_gtv_nodes,
+      p_treatment,
+      nrow = 1
+    ),
+    p_ctdna,
+    p_rtdclear,
+    p_coxpredict,
+    p_detectability_curves,
+    ncol = 1,
+    align = 'v'
+  )
+}
+
+# Example of fairly predictable unchanging risk
+plot_dynamic_modeling(
+  df_forecasting = plotdata_dynamic_risk_prediction,
+  df_detectability_smoothed = df_brms_forecasting_smoothed,
+  selected_patient = 'HN2100'
+)
+
+  
+```
+
+```{r dynamic_examples, fig.height = 8, fig.width = 6, eval=F}
+
+# Examples of decreasing risk
+plot_dynamic_modeling(
+  plotdata_dynamic_risk_prediction,
+  df_brms_forecasting_smoothed,
+  'HN3043'
+)
+
+plot_dynamic_modeling(
+  plotdata_dynamic_risk_prediction,
+  df_brms_forecasting_smoothed,
+  'HN2947'
+)
+
+plot_dynamic_modeling(
+  plotdata_dynamic_risk_prediction,
+  df_brms_forecasting_smoothed,
+  'HN2195'
+)
+
+# Examples of increasing risk
+plot_dynamic_modeling(
+  plotdata_dynamic_risk_prediction,
+  df_brms_forecasting_smoothed,
+  'HN2681'
+)
+
+plot_dynamic_modeling(
+  plotdata_dynamic_risk_prediction,
+  df_brms_forecasting_smoothed,
+  'HN3294'
+)
+
+plot_dynamic_modeling(
+  plotdata_dynamic_risk_prediction,
+  df_brms_forecasting_smoothed,
+  'HN2863'
+)
+
+plot_dynamic_modeling(
+  plotdata_dynamic_risk_prediction,
+  df_brms_forecasting_smoothed,
+  'HN2708'
+)
+```
+
+```{r, fig.height = 8, fig.width = 5, eval=F}
+plot_dynamic_modeling(
+  plotdata_dynamic_risk_prediction,
+  df_brms_forecasting_smoothed,
+  'HN3043'
+)
+
+plotdata_dynamic_risk_prediction %>%
+  filter(patient == 'HN3043') %>%
+```
+
+```{r, fig.width = 9, fig.height = 8, eval=F}
+df_prediction_diff <- plotdata_dynamic_risk_prediction %>%
+  group_by(patient) %>%
+  summarise(
+    n_timepoints = n(),
+    start = prediction[timepoint == 1],
+    mid = prediction[timepoint == (max(timepoint)-1)],
+    end = prediction[timepoint == max(timepoint)]
+  ) %>%
+  mutate(
+    diff_mid = mid - start,
+    diff_end = end - start
+  ) %>%
+  arrange(-diff_end) %>%
+  ungroup() %>%
+  filter(n_timepoints >= 3) %>%
+  mutate(n_timepoints_label = paste(n_timepoints, 'timepoints'))
+
+p_prediction_diff_end <- df_prediction_diff %>%
+  mutate(
+    patient = fct_reorder(patient, diff_end)
+  ) %>%
+  ggplot(aes(
+    x = diff_end,
+    y = start
+  )) +
+  geom_point(color = 'Grey80') +
+  theme_bw() +
+  geom_vline(xintercept = 0, color = 'black') +
+  labs(
+    y = 'Baseline prognostic score',
+    x = 'Change in prognostic score'
+  ) +
+  geom_point(
+    color = 'red',
+    data = df_prediction_diff %>%
+      filter(diff_end > 10 | diff_end < -10)
+  ) +
+  geom_text_repel(
+    aes(
+      label = patient
+    ),
+    data = df_prediction_diff %>%
+      filter(diff_end > 10 | diff_end < -10), min.segment.length = 0.01, max.overlaps = 50
+  ) +
+  xlim(-75, 75)
+
+p_prediction_diff_mid <- df_prediction_diff %>%
+  mutate(
+    patient = fct_reorder(patient, diff_mid)
+  ) %>%
+  ggplot(aes(
+    x = diff_mid,
+    y = start
+  )) +
+  geom_point(color = 'Grey80') +
+  theme_bw() +
+  geom_vline(xintercept = 0, color = 'black') +
+  labs(
+    y = 'Baseline prognostic score',
+    x = 'Change in prognostic score'
+  ) +
+  geom_point(
+    color = 'red',
+    data = df_prediction_diff %>%
+      filter(diff_mid > 10 | diff_mid < -10)
+  ) +
+  geom_text_repel(
+    aes(
+      label = patient
+    ),
+    data = df_prediction_diff %>%
+      filter(diff_mid > 10 | diff_mid < -10), min.segment.length = 0.01, max.overlaps = 50
+  ) +
+  xlim(-75, 75)
+
+plot_grid(
+  p_prediction_diff_mid,
+  p_prediction_diff_end,
+  ncol = 1
+)
+```
+
+```{r, fig.height = 8, fig.width = 6, eval=F}
+plot_dynamic_modeling(
+  plotdata_dynamic_risk_prediction,
+  df_brms_forecasting_smoothed,
+  'HN2960'
+)
+```
+
+```{r, eval=F}
+plotdata_dynamic_risk_prediction %>%
+  group_by(patient) %>%
+  mutate(
+    risk_change = if_else(
+      prediction[timepoint_name == 'Follow-up'] - prediction[timepoint_name == 'Baseline'] > 0,
+      'Increase',
+      'Decrease'
+    )
+  ) %>%
+  left_join(df_clinical_ctdna) %>%
+  ggplot(aes(
+    x = timepoint_name,
+    y = prediction,
+    group = patient
+  )) +
+  geom_line(color = 'grey80') +
+  geom_point(alpha = 0.3) +
+  facet_grid(risk_change~recurrence) +
+  scale_y_log10()
+
+plotdata_dynamic_risk_prediction %>%
+  left_join(df_clinical_ctdna) %>%
+  filter(timepoint_name == 'Follow-up') %>%
+  ggplot(aes(
+    x = recurrence,
+    y = prediction
+  )) +
+  geom_violin() +
+  geom_boxplot(width = 0.1) +
+  geom_beeswarm(color = 'black', size = 0.5)
+```
+
+```{r dynamic_prediction, fig.height = 8, fig.width = 18, eval=F}
+plotdata_dynamic_risk_prediction_clinical <- plotdata_dynamic_risk_prediction %>%
+  left_join(df_clinical_ctdna)
+
+cox_prediction_baseline <- coxph(
+  Surv(time_to_recurrence, recurrence) ~ RTDclear_z + `log GTVp` + `log GTVn`,
+  data = plotdata_dynamic_risk_prediction_clinical %>%
+    filter(timepoint == 1) %>%
+    mutate(RTDclear_z = (RTDclear - mean(RTDclear)) / sd(RTDclear))
+)
+cox_prediction_baseline_global <- coxph(
+  Surv(time_to_recurrence, recurrence) ~ `Global Prediction`,
+  data = plotdata_dynamic_risk_prediction_clinical %>%
+    filter(timepoint == 1) %>%
+    mutate(`Global Prediction` = (prediction - mean(prediction)) / sd(prediction))
+)
+
+cox_prediction_midrt <- coxph(
+  Surv(time_to_recurrence, recurrence) ~ RTDclear_z + `log GTVp` + `log GTVn`,
+  data = plotdata_dynamic_risk_prediction_clinical %>%
+    group_by(patient) %>%
+    arrange(patient, timepoint) %>%
+    filter(row_number() == n() - 1) %>%
+    ungroup() %>%
+    mutate(RTDclear_z = (RTDclear - mean(RTDclear)) / sd(RTDclear))
+)
+cox_prediction_midrt_global <- coxph(
+  Surv(time_to_recurrence, recurrence) ~ `Global Prediction`,
+  data = plotdata_dynamic_risk_prediction_clinical %>%
+    group_by(patient) %>%
+    arrange(patient, timepoint) %>%
+    filter(row_number() == n() - 1) %>%
+    ungroup() %>%
+    mutate(`Global Prediction` = (prediction - mean(prediction)) / sd(prediction))
+)
+
+cox_prediction_followup <- coxph(
+  Surv(time_to_recurrence, recurrence) ~ RTDclear_z + `log GTVp` + `log GTVn`,
+  data = plotdata_dynamic_risk_prediction_clinical %>%
+    group_by(patient) %>%
+    arrange(patient, timepoint) %>%
+    filter(row_number() == n()) %>%
+    ungroup() %>%
+    mutate(RTDclear_z = (RTDclear - mean(RTDclear)) / sd(RTDclear))
+)
+cox_prediction_followup_global <- coxph(
+  Surv(time_to_recurrence, recurrence) ~ `Global Prediction`,
+  data = plotdata_dynamic_risk_prediction_clinical %>%
+    group_by(patient) %>%
+    arrange(patient, timepoint) %>%
+    filter(row_number() == n()) %>%
+    ungroup() %>%
+    mutate(`Global Prediction` = (prediction - mean(prediction)) / sd(prediction))
+)
+
+p_cox_prediction_baseline <- forestmodel::forest_model(
+    cox_prediction_baseline,
+    recalculate_width = 7.5
+  )
+
+p_cox_prediction_midrt <- forestmodel::forest_model(
+    cox_prediction_midrt,
+    recalculate_width = 7.5
+  )
+
+p_cox_prediction_followup <- forestmodel::forest_model(
+    cox_prediction_followup,
+    recalculate_width = 7.5
+  )
+
+p_global_odds_ratios <- bind_rows(
+  summary(cox_prediction_baseline_global)$conf.int %>% as_tibble(),
+  summary(cox_prediction_midrt_global)$conf.int %>% as_tibble(),
+  summary(cox_prediction_followup_global)$conf.int %>% as_tibble()
+) %>%
+  mutate(
+    timepoint = factor(c('Baseline', 'Mid-RT', 'Follow-up'), levels = c('Baseline', 'Mid-RT', 'Follow-up')),
+    group = 'all'
+  ) %>%
+  dplyr::rename(
+    `Global OR` = `exp(coef)`,
+    lci = `lower .95`,
+    uci = `upper .95`
+  ) %>%
+  ggplot(aes(
+    x = timepoint,
+    y = `Global OR`,
+    ymin = lci,
+    ymax = uci,
+    group = group
+  )) +
+  geom_errorbar(width = 0) +
+  geom_line() +
+  geom_point() +
+  ylim(0, 5) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+p_global_p_values <- tribble(
+  ~timepoint, ~pval,
+  'Baseline', summary(cox_prediction_baseline)$waldtest[['pvalue']],
+  'Mid-RT', summary(cox_prediction_midrt)$waldtest[['pvalue']],
+  'Follow-up', summary(cox_prediction_followup)$waldtest[['pvalue']]
+) %>%
+  mutate(
+    timepoint = factor(timepoint, levels = c('Baseline', 'Mid-RT', 'Follow-up')),
+    group = 'all'
+  ) %>%
+  ggplot(aes(
+    x = timepoint,
+    y = pval,
+    group = group
+  )) +
+  geom_line() +
+  geom_point() +
+  scale_y_log10() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  labs(y = 'p value')
+
+
+p_decreasing <- plot_dynamic_modeling(
+  plotdata_dynamic_risk_prediction,
+  df_brms_forecasting_smoothed,
+  'HN3184'
+)
+
+p_increasing <- plot_dynamic_modeling(
+  plotdata_dynamic_risk_prediction,
+  df_brms_forecasting_smoothed,
+  'HN2681'
+)
+
+plot_grid(
+  p_decreasing,
+  p_increasing,
+  plot_grid(
+    plot_grid(
+      NULL,
+      plot_grid(
+        p_cox_prediction_baseline + ggtitle('Baseline'),
+        p_cox_prediction_midrt + ggtitle('Mid-radiotherapy'),
+        p_cox_prediction_followup + ggtitle('Post-treatment'),
+        ncol = 1
+      ),
+      nrow = 1,
+      rel_widths = c(1,20)
+    ),
+    plot_grid(
+        p_global_odds_ratios + ggtitle('Global odds ratios'),
+        p_global_p_values + ggtitle('Global p values'),
+        nrow = 1,
+        align = 'v'
+    ),
+    ncol = 1,
+    rel_heights = c(6,3),
+    labels = c('C', 'D')
+  ),
+  nrow = 1,
+  rel_widths = c(2,2,3),
+  labels = c('A', 'B')
+)
+```
+
+```{r rtdclear_and_global_prediction, fig.width = 15, fig.height = 9, eval=F}
+
+plot_grid(
+  plot_grid(
+    plot_grid(
+      plot_prob_detectable_singlepatient,
+      plot_detectability_curves,
+      labels = c('A', 'B'),
+      ncol = 1
+    ),
+    p_km_rtdclear,
+    labels = c('', 'E')
+  ),
+  ncol = 1,
+  labels = c('', 'F')
+) %>%
+  plot_grid(
+    plot_grid(
+      plot_grid(NULL, p_forest_jointmodel_globalprediction + ggtitle('Cox model: recurrence free survival'), nrow = 1, rel_widths = c(1,20), labels = 'F'),
+      plot_grid(
+        p_five_year_risk_beeswarm,
+        p_risk_score_strata,
+        nrow = 1,
+        rel_widths = c(1,3),
+        align = 'h',
+        labels = c('G', 'H')
+      ),
+      ncol = 1,
+      rel_heights = c(2,3)
+    ),
+    ncol = 1,
+    rel_heights = c(2,4)
+  ) %>%
+  plot_grid(
+    p_decreasing,
+    nrow = 1,
+    rel_widths = c(2,1),
+    labels = c('', 'I')
+  )
+
+```
+
+### 3 year survival table by clearance
+
+**Table:** 3 year RFS, PFS, and OS, grouped by detectable vs.
+undetectable ctDNA at 3 month follow-up.
+
+```{r ctdna_3_year_survival_by_clearance}
+get_survival_table <- function(data, group, years, groupnames = c('F group', 'T group')) {
+  timepoint = years * 12
+  
+  survfit_rfs_detectable <- survfit(
+    surv_recurrence ~ group,
+    data = df_ctdna_clinical
+  )
+  
+  survfit_pfs_detectable <- survfit(
+    surv_progression ~ group,
+    data = df_ctdna_clinical
+  )
+  
+  survfit_os_detectable <- survfit(
+    surv_overall ~ group,
+    data = df_ctdna_clinical
+  )
+  
+  tibble(
+    ctdna_group = groupnames,
+    `n` = summary(survfit_os_detectable, times = 0) %>% .$n.risk,
+    RFS = summary(survfit_rfs_detectable, times = timepoint) %>% .$surv * 100,
+    PFS = summary(survfit_pfs_detectable, times = timepoint) %>% .$surv * 100,
+    OS = summary(survfit_os_detectable, times = timepoint) %>% .$surv * 100
+  ) %>%
+    gather(Outcome, survival, -ctdna_group) %>%
+    spread(ctdna_group, survival) %>%
+    mutate(
+      Outcome = case_when(
+        Outcome == 'n' ~ 'n',
+        TRUE ~ sprintf('%s-year %s', years, Outcome)
+      )
+    )
+}
+
+df_surv_by_clearance <- get_survival_table(
+  data = df_ctdna_clinical,
+  group = df_ctdna_clinical$`3 months` > 0,
+  years = 3,
+  groupnames = c('Post-RT ctDNA cleared', 'Post-RT ctDNA detectable')
+) %>%
+  bind_rows(
+    get_survival_table(
+      data = df_ctdna_clinical,
+      group = df_ctdna_clinical$`3 months` > 0,
+      years = 5,
+      groupnames = c('Post-RT ctDNA cleared', 'Post-RT ctDNA detectable')
+    )
+  ) %>%
+  distinct()
+
+val_rfs_3yr_cleared <- df_surv_by_clearance %>% filter(Outcome == '3-year RFS') %>% .$`Post-RT ctDNA cleared` %>% signif(3)
+val_rfs_3yr_residual <- df_surv_by_clearance %>% filter(Outcome == '3-year RFS') %>% .$`Post-RT ctDNA detectable` %>% signif(3)
+val_rfs_5yr_cleared <- df_surv_by_clearance %>% filter(Outcome == '5-year RFS') %>% .$`Post-RT ctDNA cleared` %>% signif(3)
+val_rfs_5yr_residual <- df_surv_by_clearance %>% filter(Outcome == '5-year RFS') %>% .$`Post-RT ctDNA detectable` %>% signif(3)
+
+df_surv_by_clearance %>%
+  pander()
+```
+
+# Internal figures:
+
+## Cohort timelines
+
+```{r cohort_timeline_plot, fig.height = 6, fig.width = 12}
+plotdata_opc_ctdna_timediff_dx <- df_opc_ctdna_alldates %>%
+  gather(event, date, -patient, -date_of_dx) %>%
+  mutate(
+    months_since_dx = (date - date_of_dx) / (365/12)
+  ) %>%
+  left_join(df_clinical_ctdna %>% distinct(patient, vital_status)) %>%
+  arrange(vital_status, months_since_dx) %>%
+  mutate(
+    patient_id = factor(
+      patient,
+      levels = tibble(patient, vital_status, months_since_dx) %>% filter(event == 'date_last_followup') %>% distinct() %>% arrange(vital_status, months_since_dx) %>% .$patient
+    ),
+    segment = ceiling(as.integer(patient_id) / (length(unique(patient))/3)),
+    patient = as.integer(patient_id) - segment * ceiling(length(unique(patient))/3)
+  )
+
+plotdata_opc_ctdna_timediff_dx %>%
+  filter(event == 'date_last_followup') %>%
+  ggplot(aes(
+    y = patient
+  )) +
+  facet_wrap(~segment, nrow=1) +
+  geom_hline(aes(
+    yintercept = patient
+  ), color = '#F8F8F8') +
+  geom_vline(aes(
+    xintercept = 0
+  ), color = 'grey70') +
+  geom_point(aes(
+      x = months_since_dx,
+      color = vital_status
+    ),
+    shape = 4
+  ) +
+  geom_segment(
+    aes(
+      yend = patient,
+      x = date_rt_start,
+      xend = date_rt_end
+    ),
+    data = plotdata_opc_ctdna_timediff_dx %>%
+      filter(event %in% c('date_rt_start', 'date_rt_end')) %>%
+      distinct(segment, patient, event, months_since_dx) %>%
+      spread(event, months_since_dx)
+  ) +
+  geom_point(
+    aes(
+      x = months_since_dx,
+      fill = event
+    ),
+    data = plotdata_opc_ctdna_timediff_dx %>%
+      filter(event %in% c('date_local_failure', 'date_regional_failure', 'date_distant_failure')) %>%
+      mutate(
+        event = gsub('date\\_(.*?)\\_failure', '\\1 failure', event)
+      ),
+    shape = 24
+  ) +
+  geom_point(
+    aes(
+      x = months_since_dx,
+      shape = shape
+    ),
+    data = plotdata_opc_ctdna_timediff_dx %>%
+      filter(event %in% c('date_ctdna_baseline', 'date_ctdna_followup')),
+    shape = 0,
+    size = 0.5
+  ) +
+  labs(
+    x = 'Months since diagnosis',
+    y = 'Patient',
+    color = 'Status',
+    fill = 'Recurrence Event'
+  ) +
+  theme(
+    axis.text.y = element_blank(),
+    strip.text = element_blank(),
+    axis.line.y = element_blank(),
+    axis.ticks.y = element_blank()
+  ) +
+  scale_color_brewer(palette = 'Set2') +
+  scale_fill_brewer(palette = 'Set1')
+```
+
+The data demonstrate good internal consistency with the expected
+sequence of diagnosis, baseline ctDNA, treatment, post-treatment ctDNA,
+recurrence, and death or last follow-up.
+
+```{r cohort_timeline_plot_by_rt_time}
+plotdata_opc_ctdna_timediff_dx_sortby_rt <- df_opc_ctdna_alldates %>%
+  gather(event, date, -patient, -date_of_dx) %>%
+  mutate(
+    months_since_dx = (date - date_of_dx) / (365/12)
+  ) %>%
+  left_join(df_clinical_ctdna %>% distinct(patient, vital_status)) %>%
+  arrange(vital_status, months_since_dx) %>%
+  mutate(
+    patient_id = factor(
+      patient,
+      levels = tibble(patient, event, months_since_dx) %>% filter(event == 'date_rt_start') %>% distinct() %>% arrange(months_since_dx) %>% .$patient
+    ),
+    segment = ceiling(as.integer(patient_id) / (length(unique(patient))/3)),
+    patient = as.integer(patient_id) - segment * ceiling(length(unique(patient))/3)
+  )
+
+plotdata_opc_ctdna_timediff_dx_sortby_rt %>%
+  filter(grepl('date_ctdna', event)) %>%
+  ggplot(aes(
+    y = patient
+  )) +
+  facet_wrap(~segment, nrow=1) +
+  geom_hline(aes(
+    yintercept = patient
+  ), color = '#F8F8F8') +
+  geom_vline(aes(
+    xintercept = 0
+  ), color = 'grey70') +
+  geom_point(aes(
+      x = months_since_dx,
+      color = event
+    ),
+    shape = 4
+  ) +
+  geom_segment(
+    aes(
+      yend = patient,
+      x = date_rt_start,
+      xend = date_rt_end
+    ),
+    data = plotdata_opc_ctdna_timediff_dx_sortby_rt %>%
+      filter(event %in% c('date_rt_start', 'date_rt_end')) %>%
+      distinct(segment, patient, event, months_since_dx) %>%
+      spread(event, months_since_dx),
+    color = 'grey50'
+  ) +
+  labs(
+    x = 'Months since diagnosis',
+    y = 'Patient',
+    color = 'Status',
+    fill = 'Recurrence Event'
+  ) +
+  theme(
+    axis.text.y = element_blank(),
+    strip.text = element_blank(),
+    axis.line.y = element_blank(),
+    axis.ticks.y = element_blank()
+  ) +
+  scale_color_brewer(palette = 'Set1')
+```
+
+## Radiomic ROI Selection
+
+```{r radiomic_rois}
+df_imaging_roi <- read_csv('data/imaging/ctDNA_roi_names.csv') %>%
+  dplyr::rename(mrn = 1) %>%
+  gather(roi_index, roi, -mrn)
+
+chosen_rois <- c('GTV', 'GTV-CT', 'GTVn_6000', 'GTVn_L23', 'GTVn_R2', 'GTVn_R3', 'GTVp', 'GTVn')
+
+df_imaging_roi %>%
+  filter(
+    grepl('^GTV.*', toupper(roi))
+  ) %>%
+  distinct(roi) %>%
+  arrange(roi)
+
+df_imaging_roi %>%
+  filter(grepl('^GTV.*', toupper(roi))) %>%
+  arrange(mrn) %>%
+  distinct(mrn)
+
+
+df_lymphnode_rois <- df_imaging_roi %>%
+  distinct(roi) %>%
+  filter(
+    ! startsWith(roi, 'ref'),
+    ! startsWith(tolower(roi), 'at'),
+    ! startsWith(roi, 'uni'),
+    ! startsWith(roi, 'prv'),
+    ! startsWith(tolower(roi), 'in'),
+    ! startsWith(tolower(roi), 'mls'),
+    ! startsWith(roi, 'xIn'),
+    ! startsWith(roi, 'gap'),
+    ! grepl('ring', tolower(roi)),
+    ! grepl('out', tolower(roi)),
+    ! grepl('opt', tolower(roi)),
+    ! grepl('spinal', tolower(roi)),
+    ! grepl('mod', tolower(roi)),
+    ! grepl('lim', tolower(roi)),
+    ! grepl('mini', tolower(roi)),
+    ! grepl('spare', tolower(roi)),
+    ! grepl('external', tolower(roi)),
+    ! grepl('ptv', tolower(roi)),
+    ! grepl('fix', tolower(roi)),
+    ! grepl('plexus', tolower(roi)),
+    ! grepl('submand', tolower(roi)),
+    ! grepl('lens', tolower(roi)),
+    ! grepl('eye', tolower(roi)),
+    ! grepl('parotid', tolower(roi)),
+    ! grepl('prv', tolower(roi)),
+    ! grepl('acoustic', tolower(roi)),
+    ! grepl('muscle', tolower(roi)),
+    ! grepl('hot', tolower(roi)),
+    ! grepl('cold', tolower(roi)),
+    ! grepl('splash', tolower(roi)),
+    ! grepl('mandible', tolower(roi)),
+    ! grepl('isocen', tolower(roi)),
+    ! grepl('lacr', tolower(roi)),
+    ! grepl('pharyn', tolower(roi)),
+    ! grepl('oral', tolower(roi)),
+    ! grepl('cavity', tolower(roi)),
+    ! grepl('icru', tolower(roi)),
+    ! grepl('new', tolower(roi)),
+    ! grepl('ctv', tolower(roi)),
+    ! grepl('cricoid', tolower(roi)),
+    ! grepl('roi', tolower(roi)),
+    ! grepl('lips', tolower(roi)),
+    ! grepl('gtvp', tolower(roi)),
+    ! grepl('trial', tolower(roi)),
+    ! grepl('working', tolower(roi)),
+    ! grepl('idr', tolower(roi)),
+    ! grepl('hdr', tolower(roi)),
+    ! grepl('ldr', tolower(roi)),
+    ! grepl('ref', tolower(roi)),
+    ! grepl('brain', tolower(roi)),
+    ! grepl('hnvmat', tolower(roi)),
+    ! grepl('review', tolower(roi)),
+    ! grepl('for ajb', tolower(roi)),
+    ! grepl('gapped', tolower(roi)),
+    ! grepl('all', tolower(roi)),
+    ! startsWith(roi, '?'),
+    ! roi == 'UTV',
+    ! tolower(roi) == 'r',
+    ! tolower(roi) == 'x',
+    grepl('L', roi) | grepl('R', roi) | grepl('1', roi) | grepl('6', roi) | grepl('I', roi) | grepl('VI', roi) | grepl('GTVn', roi),
+    grepl('\\d', roi) | grepl('GTVn', roi),
+    ! roi == '7650 (0.0)',
+    ! roi == '601',
+    ! roi == '605',
+  )
+
+
+df_imaging_roi %>%
+  distinct(roi) %>%
+  filter(
+    grepl('gtv', tolower(roi)),
+    ! grepl('ref', tolower(roi))
+  )
+
+df_imaging_roi %>%
+  filter(
+    roi %in% c('GTV', 'GTVp_6000', 'GTV-CT', 'GTVp')
+  )
+
+write_lines(df_lymphnode_rois$roi, file = 'data/imaging/lymphnode_roi_names.txt')
+```
+
+## 4-feature Radiomic Signature from Aerts et al.
+
+We attempt to implement the 4-feature radiomic signature published by
+Aerts et al.
+
+```{r radiomics_four_features, fig.height = 12, fig.width = 12}
+coefficient_table = tribble(
+  ~feature, ~coefficient,
+  'energy', 2.42e-11,
+  'compactness', -5.38e-3,
+  'glrlm_gln', -1.47e-4,
+  'wavelet_glrlm_gln', 9.39e-6
+)
+
+df_radiomics_fourfeature %>%
+  gather(feature, value, -patient, -mrn, -signature) %>%
+  left_join(coefficient_table) %>%
+  arrange(signature) %>%
+  mutate(
+    patient = factor(patient, levels = unique(patient)),
+    marginal_value = coefficient * value
+  ) %>%
+  ggplot(aes(
+    x = patient,
+    y = marginal_value,
+    color = feature
+  )) +
+  geom_bar(aes(
+    y = signature
+    ),
+    data = df_radiomics_fourfeature %>%
+      distinct(patient, signature) %>%
+      arrange(signature) %>%
+      mutate(patient = factor(patient, levels = unique(patient))),
+    color = FALSE,
+    fill = 'grey80',
+    stat = 'identity'
+  ) +
+  geom_point() +
+  scale_color_brewer(palette = 'Set2') +
+  labs(
+    x = 'Patient',
+    y = 'Value',
+    color = 'Signature component'
+  ) +
+  ggtitle('Marginal contributions of signature components') +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+ 
+plotdata_radiomics_fourfeature_clinical <- df_radiomics_fourfeature %>%
+  left_join(df_clinical_ctdna) %>%
+  left_join(df_pyradiomics %>% select(patient, original_shape_VoxelVolume, original_shape_MajorAxisLength)) %>%
+  mutate(
+    signature_group = if_else(signature > median(signature,), 'Above Median', 'Below Median'),
+    energy_group = if_else(energy > median(energy), 'Above Median', 'Below Median'),
+    compactness_group = if_else(compactness > median(compactness), 'Above Median', 'Below Median'),
+    gln_group = if_else(glrlm_gln > median(glrlm_gln), 'Above Median', 'Below Median'),
+    wavelet_group = if_else(wavelet_glrlm_gln > median(wavelet_glrlm_gln), 'Above Median', 'Below Median'),
+    volume_group = if_else(original_shape_VoxelVolume > median(original_shape_VoxelVolume, na.rm=T), 'Above Median', 'Below Median'),
+    major_axis_length_group = if_else(original_shape_MajorAxisLength > median(original_shape_MajorAxisLength, na.rm=T), 'Above Median', 'Below Median')
+  )
+
+plotlist_recurrence_by_signature = list(
+  survfit(Surv(time_to_recurrence, recurrence) ~ signature_group, data = plotdata_radiomics_fourfeature_clinical) %>%
+    ggsurvplot(pval = T) + ggtitle('Signature'),
+  survfit(Surv(time_to_recurrence, recurrence) ~ energy_group, data = plotdata_radiomics_fourfeature_clinical) %>%
+    ggsurvplot(pval = T) + ggtitle('Energy'),
+  survfit(Surv(time_to_recurrence, recurrence) ~ compactness_group, data = plotdata_radiomics_fourfeature_clinical) %>%
+    ggsurvplot(pval = T) + ggtitle('Compactness'),
+  survfit(Surv(time_to_recurrence, recurrence) ~ gln_group, data = plotdata_radiomics_fourfeature_clinical) %>%
+    ggsurvplot(pval = T) + ggtitle('Grey Level Nonuniformity'),
+  survfit(Surv(time_to_recurrence, recurrence) ~ wavelet_group, data = plotdata_radiomics_fourfeature_clinical) %>%
+    ggsurvplot(pval = T) + ggtitle('Wavelet GLN'),
+  survfit(Surv(time_to_recurrence, recurrence) ~ volume_group, data = plotdata_radiomics_fourfeature_clinical) %>%
+    ggsurvplot(pval = T) + ggtitle('GTVp Volume'),
+  survfit(Surv(time_to_recurrence, recurrence) ~ major_axis_length_group, data = plotdata_radiomics_fourfeature_clinical) %>%
+    ggsurvplot(pval = T) + ggtitle('GTVp Major Axis Length')
+)
+
+plot_grid(
+  plotlist = plyr::llply(plotlist_recurrence_by_signature, function(z) {z$plot + theme(legend.position = 'none') + labs(y = 'RFS')}),
+  get_legend(plotlist_recurrence_by_signature[[1]]$plot + theme(legend.position = 'right') + scale_color_discrete(labels = c('Above Median', 'Below Median')))
+)
+```
+
+Strangely, our values are inverted (negative), and the Aerts signature
+is prognostic but in the reverse direction as what is expected!
+Nevertheless, every one of its four subcomponents is prognostic, which
+agrees with previous studies.
+
+What is going on? The plot of marginal signature contributions suggests
+that in our data, the components of the model with negative coefficients
+are dominant.
+
+But more interesting is that all of these features seem to be quite
+highly correlated! Also, tumor volume and major axis diameter are
+predictive of outcomes too. Might there be a confounder at play?
+
+We show below that every subcomponent of the Aerts signature is
+correlated quite strongly with GTVp volume. Likely, these components are
+simply capturing surrogate features correlated with volume, and in fact
+volume is the true predictive biomarker here.
+
+```{r radiomic_correlations_against_volume, fig.width = 12, fig.height = 6}
+plot_grid(
+  plotdata_radiomics_fourfeature_clinical %>%
+    gather(
+      component, value, energy, compactness, glrlm_gln, wavelet_glrlm_gln
+    ) %>%
+    ggplot(aes(
+      x = original_shape_VoxelVolume,
+      y = value
+    )) +
+    geom_point() +
+    facet_wrap(~ component, scales = 'free') +
+    ggtitle('Correlations against volume'),
+  plotdata_radiomics_fourfeature_clinical %>%
+    gather(
+      component, value, energy, compactness, glrlm_gln, wavelet_glrlm_gln
+    ) %>%
+    ggplot(aes(
+      x = original_shape_MajorAxisLength,
+      y = value
+    )) +
+    geom_point() +
+    facet_wrap(~ component, scales = 'free') +
+    ggtitle('Correlations against major axis length')
+)
+```
+
+Given these findings, we will not be trying to leverage this particular
+radiomic signature below as we search for a predictive model.
+
+## Radcure cohort
+
+```{r}
+df_clinical_radcure <- read_csv('data/clinical/data_clinical_radcure_opc.csv')
+  
+abridged_table_variables <- c('age_at_dx', 'sex', 'stage_t_ajcc7', 'stage_n_ajcc7', 'rt_regimen')
+array_abridged_table_labels <- list(
+      sex ~ 'Sex',
+      age_at_dx ~ 'Age at diagnosis',
+      stage_t_ajcc7 ~ 'T category',
+      stage_n_ajcc7 ~ 'N category',
+      rt_regimen ~ 'Treatment'
+    )
+df_clinical_radcure %>%
+  mutate(
+    stage_t_ajcc7 = case_when(
+      grepl('T1', stage_t_ajcc7) | grepl('T2', stage_t_ajcc7) ~ 'T1-2',
+      grepl('T3', stage_t_ajcc7) | grepl('T4', stage_t_ajcc7) ~ 'T3-4'
+    ),
+    stage_n_ajcc7 = case_when(
+      grepl('N0', stage_n_ajcc7) ~ 'N0',
+      grepl('N1', stage_n_ajcc7) | grepl('N2', stage_n_ajcc7) ~ 'N1-2',
+      grepl('N3', stage_n_ajcc7) ~ 'N3'
+    )
+  ) %>%
+  tbl_summary(
+    include = all_of(abridged_table_variables),
+    label = array_abridged_table_labels
+  )
+
+plotdata_opc_eligible <- df_clinical_radcure %>%
+  filter(rt_dose == 70, p16_status == 'Positive') %>%
+  mutate(rt_year = gsub('(....)-..-..', '\\1', date_rt_start)) %>%
+  select(rt_year) %>%
+  filter(rt_year %in% c('2009', '2010', '2011', '2012', '2013', '2014', '2015', '2016'))
+
+plotdata_opc_eligible %>% count(rt_year) %>% summarise(mean(n))
+
+p_opc_eligible <- plotdata_opc_eligible %>%
+  ggplot(aes(
+    x = rt_year
+  )) +
+  geom_bar()
+```
+
+# Exporting Variables
+
+This is a placeholder section in which we export variables to include in
+publications.
+
+```{r variables}
+####################################################
+# Write out some variables to memory for the paper #
+####################################################
+
+val_n_patients_ctdna_all <- df_clinical_ctdna$patient %>% unique %>% length
+val_n_patients_ctdna_all_rtalone <- df_clinical_ctdna %>% filter(rt_regimen == 'RT Alone') %>% distinct(patient) %>% nrow()
+val_n_patients_ctdna_all_crt <- df_clinical_ctdna %>% filter(rt_regimen == 'CRT') %>% distinct(patient) %>% nrow()
+val_n_patients_ctdna_all_egfrirt <- df_clinical_ctdna %>% filter(rt_regimen == 'RT + EGFRI') %>% distinct(patient) %>% nrow()
+val_n_patients_ctdna_all_rtio <- df_clinical_ctdna %>% filter(rt_regimen == 'RT+ IO') %>% distinct(patient) %>% nrow()
+
+val_n_patients_ctdna_included <- df_ctdna_clinical$patient %>% unique %>% length
+val_n_patients_ctdna_missingbaseline <- df_ctdna %>%
+  spread(timepoint, ctdna) %>%
+  filter(is.na(Baseline)) %>%
+  nrow()
+val_n_patients_ctdna_missingmid <- df_ctdna %>%
+  spread(timepoint, ctdna) %>%
+  filter(is.na(`Mid RT`)) %>%
+  nrow()
+val_n_patients_ctdna_missingfollowup <- df_ctdna %>%
+  spread(timepoint, ctdna) %>%
+  filter(is.na(`3 months`)) %>%
+  nrow()
+val_n_patients_ctdna_3timepoint <- df_ctdna %>%
+  spread(timepoint, ctdna) %>%
+  filter(!is.na(Baseline), !is.na(`Mid RT`), !is.na(`3 months`)) %>%
+  nrow()
+val_n_patients_ctdna_baselinedetectable <- df_ctdna %>%
+  spread(timepoint, ctdna) %>%
+  filter(Baseline > 0) %>%
+  nrow()
+val_percent_patients_ctdna_baselinedetectable <- round(val_n_patients_ctdna_baselinedetectable / val_n_patients_ctdna_all * 100)
+val_n_patients_ctdna_early <- df_ctdna_clinical %>% filter(!is.na(`Early RT`)) %>% nrow()
+val_percent_patients_ctdna_early_of_all <- round(val_n_patients_ctdna_early / val_n_patients_ctdna_included * 100)
+val_n_patients_undetectable_3months <- df_ctdna_clinical %>% filter(`3 months` == 0) %>% nrow()
+val_percent_patients_undetectable_3months <- round(val_n_patients_undetectable_3months / val_n_patients_ctdna_included * 100, 1)
+val_date_first_patient_diagnosed <- df_clinical_ctdna %>%
+  arrange(date_of_dx) %>%
+  filter(row_number() == 1) %>%
+  .$date_of_dx %>%
+  format('%b %d, %Y')
+val_date_first_patient_rt_completed <- df_clinical_ctdna %>%
+  arrange(date_rt_end) %>%
+  filter(row_number() == 1) %>%
+  .$date_rt_end %>%
+  format('%b %d, %Y')
+val_date_last_patient_rt_completed <- df_clinical_ctdna %>%
+  arrange(date_rt_end) %>%
+  filter(row_number() == n()) %>%
+  .$date_rt_end %>%
+  format('%b %d, %Y')
+
+val_n_patients_imaging_of_included <- df_ctdna_eqd2_radiomic_clinical %>%
+  filter(!is.na(gtv_primary), !is.na(sum_gtv_nodes)) %>%
+  distinct(patient) %>%
+  nrow()
+
+val_n_patient_surgery_excluded <- nrow(df_exclude)
+val_n_patient_tonsillectomy <- sum(df_surgery$tonsillectomy)
+
+##################################################################################
+# Outputting patient lists for Rohan Salunkhe to do retrospective imaging review #
+##################################################################################
+
+df_clinical_ctdna %>%
+  filter(recurrence) %>%
+  mutate(
+    review_reason_clinical = 'recurrence',
+    baseline_ctdna_detectable = patient %in% df_ctdna_clinical$patient
+  ) %>%
+  full_join(
+    df_ctdna_clinical %>%
+      filter(`3 months` != 0) %>%
+      mutate(
+        review_reason_molecular = 'residual HPV DNA',
+        baseline_ctdna_detectable = patient %in% df_ctdna_clinical$patient
+      ) %>%
+      select(patient, review_reason_molecular)
+  ) %>%
+  select(patient, mrn, review_reason_clinical, review_reason_molecular, baseline_ctdna_detectable, everything()) %>%
+  select(-surv_recurrence, -surv_progression, -surv_overall) %>%
+  write_csv('data/results/patients_for_review_by_rohan.csv')
+
+df_gtv_primary %>%
+  rename(GTVp_source = source) %>%
+  full_join(df_gtv_nodes %>% rename(GTVn_source = source)) %>%
+  left_join(df_clinical_ctdna %>% select(mrn, patient)) %>%
+  select(mrn, patient, everything()) %>%
+  write_csv('data/results/opc_hpvdna_merged_gtvp_gtvn.csv')
+
+# ------------------------ #
+# BRMS model fixed effects #
+# ------------------------ #
+
+df_brms_ctdna_gtv_eqd2_fixedeffects_summary <- brms::posterior_summary(
+    brms_ctdna_eqd2_gtv,
+    variable=vector_brms_gtv_fixedeffects
+  ) %>%
+  as_tibble(rownames = 'parameter') %>%
+  mutate(parameter = factor(parameter, levels = vector_brms_gtv_fixedeffects)) %>%
+  left_join(df_brms_gtv_fixedeffects_names)
+
+list_fixedeffects_values <- df_brms_ctdna_gtv_eqd2_fixedeffects_summary %>%
+  mutate(
+    parameter = paste0('val_', gsub(':', '_', parameter))
+  ) %>%
+  plyr::dlply('parameter', function(z) {
+    sprintf('%s, 95CI: %s to %s', signif(z$Estimate, 3), signif(z$Q2.5, 3), signif(z$Q97.5, 3))
+  })
+
+# Attach these variables to global environment for export
+list2env(list_fixedeffects_values, envir = .GlobalEnv)
+```
+
+```{r}
+variables_to_export <- ls()[sapply(mget(ls()), length) == 1 & sapply(mget(ls()), typeof) %in% c('character', 'double', 'integer', 'numeric')]
+
+write_yaml(variables_to_export, 'variables.yml')
+```
+
+# Archived Analyses Below
+
+Here I am using a Bayesian cox survival function to fit recurrence data.
+This is implemented in Stan basically using brms' implementation, which
+approximates the baseline hazard function using a flexible spline.
+
+```{r, eval=F}
+model_stan_recurrence <- cmdstan_model(
+  'stan/cox_model.stan',
+  compile = T
+)
+
+n_basis = 12
+data_stan_recurrence <- list(
+  N = nrow(df_ctdna_clinical),  # total number of observations
+  Y = df_ctdna_clinical$time_to_recurrence,  # response variable
+  cens = if_else(df_ctdna_clinical$recurrence, 0, 1),  # indicates censoring
+  K = 2,  # number of population-level effects
+  X = model.matrix(
+    ~ 1 + followup_detectable,
+    data = df_ctdna_clinical %>%
+      mutate(
+        midrt = log(`Mid RT` + 1),
+        followup = log(`3 months` + 1),
+        followup_detectable = `3 months` > 0,
+        censored = as.integer(!recurrence)
+      )
+  ), # population-level design matrix
+  
+  # data for flexible baseline functions
+  Kbhaz = n_basis,  # number of basis functions
+  
+  # design matrix of the baseline function
+  Zbhaz = brms:::bhaz_basis_matrix(df_ctdna_clinical$time_to_recurrence, args = list(degree = n_basis-1, intercept = TRUE)),
+  
+  # design matrix of the cumulative baseline function
+  Zcbhaz = brms:::bhaz_basis_matrix(df_ctdna_clinical$time_to_recurrence, args = list(degree = n_basis-1, intercept = TRUE), integrate = TRUE),
+  
+  # a-priori concentration vector of baseline coefficients
+  con_sbhaz = rep(1, n_basis),
+  
+  # should the likelihood be ignored?
+  prior_only = FALSE
+)
+
+n_chains <- 1
+stan_recurrence <- model_stan_recurrence$sample(
+  data = data_stan_recurrence,
+  chains = n_chains,
+  iter_warmup = 1000,
+  iter_sampling = 1000,
+  parallel_chains = n_chains,
+  refresh = 100
+)
+
+matrix_hazard_components_by_iteration <- spread_draws(stan_recurrence, sbhaz[component]) %>%
+  distinct(component, sbhaz, .chain, .iteration) %>%
+  unite('chain_iteration', .chain, .iteration) %>%
+  spread(component, sbhaz) %>%
+  as.data.frame() %>%
+  column_to_rownames('chain_iteration') %>%
+  as.matrix()
+```
+
+Here is what the fitted baseline hazard function looks like.
+
+```{r, eval=F}
+plotdata_hazard <- data_stan_recurrence$Zbhaz %*% t(matrix_hazard_components_by_iteration) %>%
+  as_tibble(rownames = 'index') %>%
+  mutate(Y = data_stan_recurrence$Y) %>%
+  gather(chain_iteration, hazard, -Y, -index)
+
+plotdata_hazard %>%
+  ggplot(aes(
+    x = Y,
+    y = hazard
+  )) +
+  geom_line(aes(
+    group = chain_iteration
+    ),
+    alpha = 0.1) +
+  geom_line(
+    data = plotdata_hazard %>%
+      group_by(index, Y) %>%
+      summarise(hazard = mean(hazard)) %>%
+      ungroup(),
+    color = 'black'
+  )
+```
+
+Next, we prepare a joint Bayesian model, in which we **simultaneously
+fit the ctDNA and survival data**. See the plate diagram below which
+describes the complete model as a probabilistic graphical network.
+
+![](schematics/plate_diagram.png)
+
+As you can see in this model, ctDNA levels and survival times are
+conditionally independent given the random effects (*r* and *s*). This
+means that if we knew the random effects perfectly, then ctDNA and
+survival times would not vary with each other. However, given that
+random effects are unknown and inferred, this model allows known ctDNA
+levels to inform the inference of our unknown survival outcomes.
+
+From speaking with Sareh, an alternative is to model survival using a
+time-varying model (because ctDNA varies with time and thus can break
+the proportional hazards assumption). Sareh will attempt this analysis
+analysis for us. However, given that there ctDNA is correlated
+within-sample between timepoints, the above Bayesian model attempts to
+model the time-variance of ctDNA. This time variance is captured by the
+random effects (which themselves are time invariant). So with the above
+model, we may still get away with a time-invariant survival model.
+
+```{r combined_stan_risk_model, eval=F}
+matrix_stan_zinb_cox_X <- model.matrix(
+    ~ 1 + n_category + t_category,
+    data = df_ctdna_clinical %>%
+    mutate(
+      chemotherapy = if_else(rt_regimen == 'CRT', 1, 0),
+      n_category = as.integer(stage_n_ajcc8),
+      t_category = as.integer(stage_t_ajcc8),
+      censored = as.integer(!recurrence)
+    )
+)
+
+data_stan_zinb_cox <- list(
+  cox_Y = df_ctdna_clinical$time_to_recurrence,  # response variable
+  cens = if_else(df_ctdna_clinical$recurrence, 0, 1),  # indicates censoring
+  cox_X = matrix_stan_zinb_cox_X, # population-level design matrix
+  cox_N = nrow(matrix_stan_zinb_cox_X),  # total number of observations
+  cox_K = ncol(matrix_stan_zinb_cox_X),  # number of population-level effects
+  # data for flexible baseline functions
+  Kbhaz = n_basis,  # number of basis functions
+  
+  # design matrix of the baseline function
+  Zbhaz = brms:::bhaz_basis_matrix(df_ctdna_clinical$time_to_recurrence, args = list(degree = n_basis-1, intercept = TRUE)),
+  
+  # design matrix of the cumulative baseline function
+  Zcbhaz = brms:::bhaz_basis_matrix(df_ctdna_clinical$time_to_recurrence, args = list(degree = n_basis-1, intercept = TRUE), integrate = TRUE),
+  
+  # a-priori concentration vector of baseline coefficients
+  con_sbhaz = rep(1, n_basis)
+)
+
+  # int<lower=1> zinb_N;  // total number of observations
+  # int zinb_Y[zinb_N];  // response variable
+  # int<lower=1> zinb_K;  // number of population-level effects
+  # matrix[zinb_N, zinb_K] zinb_X;  // population-level design matrix
+  # int<lower=1> K_zi;  // number of population-level effects
+  # matrix[zinb_N, K_zi] X_zi;  // population-level design matrix
+  # // data for group-level effects of ID 1
+  # int<lower=1> N_1;  // number of grouping levels
+  # int<lower=1> M_1;  // number of coefficients per level
+  # int<lower=1> J_1[zinb_N];  // grouping indicator per observation
+  # // group-level predictor values
+  # vector[zinb_N] Z_1_1;
+  # vector[zinb_N] Z_1_2;
+  # int<lower=1> NC_1;  // number of group-level correlations
+  # // data for group-level effects of ID 2
+  # int<lower=1> N_2;  // number of grouping levels
+  # int<lower=1> M_2;  // number of coefficients per level
+  # int<lower=1> J_2[zinb_N];  // grouping indicator per observation
+  # // group-level predictor values
+  # vector[zinb_N] Z_2_zi_1;
+  # vector[zinb_N] Z_2_zi_2;
+  # int<lower=1> NC_2;  // number of group-level correlations
+  # int prior_only;  // should the likelihood be ignored?
+  
+list_standata_zinbmodel <- standata(brms_ctdna_eqd2_stage)
+names(list_standata_zinbmodel)[names(list_standata_zinbmodel) == 'N'] = 'zinb_N'
+names(list_standata_zinbmodel)[names(list_standata_zinbmodel) == 'Y'] = 'zinb_Y'
+names(list_standata_zinbmodel)[names(list_standata_zinbmodel) == 'K'] = 'zinb_K'
+names(list_standata_zinbmodel)[names(list_standata_zinbmodel) == 'X'] = 'zinb_X'
+
+list_standata_zinb_cox <- c(data_stan_zinb_cox, list_standata_zinbmodel)
+```
+
+```{r, eval=FALSE}
+model_stan_zinb_cox <- cmdstan_model(
+  'stan/zinb_cox_model.stan',
+  compile = T
+)
+
+n_chains = 4
+stan_zinb_cox <- model_stan_zinb_cox$sample(
+  data = list_standata_zinb_cox,
+  chains = n_chains,
+  iter_warmup = 4000,
+  iter_sampling = 1000,
+  parallel_chains = n_chains,
+  refresh = 1000
+)
+
+stan_zinb_cox$save_object('stan/zinb_cox_model_result.Rds')
+```
+
+```{r, eval=F}
+stan_zinb_cox <- readRDS('stan/zinb_cox_model_result.Rds')
+
+df_draws_negbin <- spread_draws(stan_zinb_cox, zinb_b[parameter_index])
+df_draws_zi <- spread_draws(stan_zinb_cox, b_zi[parameter_index])
+
+df_draws_negbin %>%
+  left_join(
+    tibble(
+      parameter_index = 1:(ncol(list_standata_zinb_cox$zinb_X)-1),
+      parameter_name = colnames(list_standata_zinb_cox$zinb_X)[2:ncol(list_standata_zinb_cox$zinb_X)]
+    )
+  ) %>%
+  ggplot(aes(
+    x = zinb_b
+  )) +
+  geom_histogram() +
+  facet_wrap(~parameter_name, scales = 'free')
+
+df_draws_zi %>%
+  left_join(
+    tibble(
+      parameter_index = 1:(ncol(list_standata_zinb_cox$X_zi)-1),
+      parameter_name = colnames(list_standata_zinb_cox$X_zi)[2:ncol(list_standata_zinb_cox$X_zi)]
+    )
+  ) %>%
+  ggplot(aes(
+    x = b_zi
+  )) +
+  geom_histogram() +
+  facet_wrap(~parameter_name, scales = 'free', ncol = 2, dir = 'v')
+```
+
+After fitting the model, we perform correlative model checks to find
+difficulties in identifiability.
+
+Proper analysis of the Cox model estimates is to come.
+
+```{r, eval=F, fig.width = 12, fig.height = 12}
+df_draws <- gather_draws(stan_zinb_cox, zinb_b[parameter_index], zinb_nb_true_Intercept, zinb_zi_true_Intercept, cox_true_Intercept, cox_c[parameter_index], cox_Intercept)
+
+df_draws %>%
+  ggplot(aes(
+    x = .value
+  )) +
+  geom_histogram() +
+  facet_wrap(~.variable + parameter_index, scales = 'free', ncol = 2, dir = 'v')
+
+df_draws %>%
+  ggplot(aes(
+    y = .value,
+    x = .iteration,
+    color = .chain,
+    group = .chain
+  )) +
+  geom_line() +
+  facet_wrap(~.variable + parameter_index, scales = 'free', ncol = 2, dir = 'v')
+
+df_draws %>%
+  unite('var', .variable, parameter_index) %>%
+  spread(var, .value) %>%
+  select(-.chain, -.iteration, -.draw) %>%
+  ggpairs()
+```
+
+```{r predictive_estimates, eval=F}
+stan_zinb_cox$summary(c('zinb_b', 'shape', 'b_zi', 'sd_1', 'sd_2', 'cox_b', 'cox_c', 'cox_true_Intercept', 'zinb_nb_true_Intercept', 'zinb_zi_true_Intercept'))
+
+model_posterior <- gather_draws(
+  stan_zinb_cox,
+  zinb_b[index],
+  shape, b_zi[index],
+  sd_1[index],
+  sd_2[index],
+  cox_b[index],
+  cox_c[index],
+  sbhaz[index],
+  cox_true_Intercept,
+  zinb_nb_true_Intercept,
+  zinb_zi_true_Intercept
+) %>%
+  ungroup()
+
+sbhaz <- stan_zinb_cox %>%
+  gather_draws(sbhaz[index]) %>%
+  ungroup() %>%
+  spread(index, .value) %>%
+  arrange(.chain, .iteration) %>%
+  select(-.chain, -.iteration, -.draw, -.variable) %>%
+  as.matrix %>%
+  t()
+
+cox_Intercept = stan_zinb_cox %>%
+  gather_draws(cox_true_Intercept) %>%
+  ungroup() %>%
+  arrange(.chain, .iteration) %>%
+  .$.value
+
+cox_b = stan_zinb_cox %>%
+  gather_draws(cox_b[index]) %>%
+  ungroup() %>%
+  spread(index, .value) %>%
+  arrange(.chain, .iteration) %>%
+  select(-.chain, -.iteration, -.draw, -.variable) %>%
+  as.matrix %>%
+  t()
+
+cox_c = stan_zinb_cox %>%
+  gather_draws(cox_c[index]) %>%
+  ungroup() %>%
+  spread(index, .value) %>%
+  arrange(.chain, .iteration) %>%
+  select(-.chain, -.iteration, -.draw, -.variable) %>%
+  as.matrix %>%
+  t()
+
+draws_r1 <- stan_zinb_cox %>%
+  gather_draws(r_1[patient, parameter]) %>%
+  ungroup() %>%
+  arrange(.chain, .iteration) %>%
+  mutate(chain_iteration = (.chain - 1) * max(.iteration) + .iteration) %>%
+  spread(parameter, .value) %>%
+  select(-patient, -.chain, -.iteration, -.draw, -.variable)
+matrix_draws_r1 <- abind(split(draws_r1 %>% select(-chain_iteration), draws_r1$chain_iteration), along = 3)
+r_1 <- sapply(1:4000, function(i) {matrix_draws_r1[,,i] %*% cox_c[1:2, i]}) %>% t
+
+draws_r2 <- stan_zinb_cox %>%
+  gather_draws(r_2[patient, parameter]) %>%
+  ungroup() %>%
+  filter(parameter == 2) %>%
+  spread(patient, .value) %>%
+  arrange(.chain, .iteration) %>%
+  select(-.draw, -.variable, -parameter, -.chain, -.iteration) %>%
+  as.matrix()
+r_2 <- draws_r2 * cox_c[3, ]
+
+tibble(
+  patient = list_standata_zinb_cox$J_1,
+  eqd2 = list_standata_zinb_cox$zinb_X[, 'EQD2'],
+  ctdna = list_standata_zinb_cox$zinb_Y
+) %>%
+  left_join(
+    tibble(
+      r_2_mean = colMeans(r_2)
+    ) %>%
+      mutate(patient = row_number())
+  ) %>%
+  group_by(patient) %>%
+  filter(eqd2 == max(eqd2)) %>%
+  ungroup() %>%
+  mutate(detectable = ctdna > 0) %>%
+  ggplot(aes(
+    x = r_2_mean,
+    y = detectable
+  )) +
+  geom_point()
+
+bhaz = list_standata_zinb_cox$Zbhaz %*% sbhaz %>% t()
+cbhaz = list_standata_zinb_cox$Zcbhaz %*% sbhaz %>% t()
+cox_mu = cox_Intercept +
+  t(list_standata_zinb_cox$cox_X[, 2:list_standata_zinb_cox$cox_K] %*% cox_b) +
+  r_1 +
+  r_2
+cox_log_lccdf = -cbhaz * exp(cox_mu)
+cox_log_lpdf = log(bhaz) + cox_mu + cox_log_lccdf
+
+tibble(
+  censored_mean = colMeans(cox_log_lccdf),
+  uncensored_mean = colMeans(cox_log_lpdf),
+  cens = list_standata_zinb_cox$cens,
+  actual = list_standata_zinb_cox$cox_Y,
+  mu = colMeans(cox_mu)
+) %>%
+  ggplot(aes(
+    x = exp(mu),
+    y = actual,
+    color = cens
+  )) +
+  geom_point()
+```
+
+# Rational ctDNA modeling
+
+```{r, fig.height = 10, fig.width = 12}
+# ctdna level
+simulate_ctdna <- function(a=0.8, k=0.6, l=0.1, x_0=2) {
+  crossing(t=0:100, a, k, l, x_0) %>%
+    mutate(
+      y = a * x_0 / (a-l) * (exp(-l*t) - exp(-a*t)) + a * k * x_0 * exp(-l*t)
+    )
+}
+
+simulate_ctdna(a = c(0.01, 0.05, 1, 2), l = 0.5) %>%
+  ggplot(aes(
+    x = t,
+    y = y,
+    group = a,
+    color = a
+  )) +
+  geom_line(size = 2) +
+  facet_wrap(~x_0)
+
+simulate_ctdna(a = c(0.01, 0.05, 1, 2), l = c(0.02, 0.05, 0.1, 0.2)) %>%
+  ggplot(aes(
+    x = t,
+    y = y,
+    group = a,
+    color = a
+  )) +
+  geom_line(size = 2) +
+  facet_wrap(~l)
+
+```

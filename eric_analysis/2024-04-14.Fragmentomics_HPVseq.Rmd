@@ -1,0 +1,894 @@
+---
+title: "Fragmentomics_V1"
+output: html_document
+date: "2024-04-14"
+---
+
+```{r}
+
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(caret)
+library(colorspace)
+library(ComplexHeatmap)
+library(DataExplorer)
+library(data.table)
+library(dplyr)
+library(faraway)
+library(forestmodel)
+library(ggbeeswarm)
+library(ggplot2)
+library(ggpubr)
+library(ggthemr)
+library(gridExtra)
+library(NMF)
+# library(prcomp)
+library(rlang)
+library(survival)
+library(survminer)
+library(RColorBrewer)
+library(readxl)
+library(tidyverse)
+library(viridis)
+
+ggthemr(
+  palette = 'dust'
+)
+```
+
+```{r}
+
+df_clinical_opc = fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/clincalData/20240414_clinical_OPC.txt")
+
+
+
+df_clinical_opc$Sample <- gsub("_L.*", "", df_clinical_opc$Sample)
+
+df_fragment_hpv_1 = fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/fragmentLength/20240414_fragmentlength.txt")
+
+df_fragment_hpv_2 = fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/fragmentLength/20240415_fraglength_jinfeng.txt")
+df_fragment_hpv_2$Sample <- gsub("_L.*", "", df_fragment_hpv_2$Sample)
+df_fragment_hpv_2$Sample <- gsub("_hg.*", "", df_fragment_hpv_2$Sample)
+df_fragment_hpv_2$Timepoint = "3 Month"
+df_fragment_hpv_2 = df_fragment_hpv_2 %>% 
+  filter(Sample != "OPC-ReSeq_Cap1_7_S139")
+
+
+df_fragment_hpv = rbind(df_fragment_hpv_1,df_fragment_hpv_2)
+remove(df_fragment_hpv_1,df_fragment_hpv_2)
+
+```
+
+# Process Dataframes
+
+```{r}
+
+# # ################
+# # # re-calculate the proportion accordingly 
+# # ################
+
+
+df_prop_virus <- df_fragment_hpv %>%
+  # Calculate the sum of columns 3 through 603
+  mutate(total_sum = rowSums(.[, 53:253])) %>%
+  dplyr::select(Sample, everything()) %>%
+  left_join(dplyr::select(df_clinical_opc, Sample, Timepoint,patient),by=c("Sample","Timepoint")) %>% 
+  filter(total_sum > 100) %>%
+  # Divide each column by the respective total_sum
+  mutate(across(53:253, ~ . / total_sum)) %>% 
+  dplyr::select(Sample,Timepoint,patient,53:253) %>%
+  arrange(Sample)
+
+
+```
+
+## Summarize proportions
+
+```{r}
+summarized_df <- df_prop_virus %>%
+  # Group by patient and Timepoint
+  group_by(patient, Timepoint) %>%
+  # Summarize by taking the sum of columns 4 to 150
+  summarize(sum_across = sum(across(4:104)), .groups = 'drop') %>%
+  # Pivot to wide format: patients as rows, timepoints as columns
+  pivot_wider(names_from = Timepoint, values_from = sum_across) %>% 
+  select(patient,Baseline,`Early RT`,`Mid RT`,`3 Month`)
+
+
+fwrite(summarized_df,"~/Documents/1 Bratman/head_neck_analysis_lucas/results/HPV_fragmentomics_propunder150bp.txt",sep = "\t",quote=FALSE)
+```
+
+```{r}
+library(ComplexHeatmap)
+library(colorspace)
+
+
+result = df_prop_virus %>% 
+  filter(Timepoint == "Mid RT") %>% 
+  arrange(desc(`167`))
+
+col1 = sequential_hcl(9, "Oslo")
+
+
+
+x = as.matrix(result[,c(50:180)])
+# rownames(x) = result$patient
+
+
+Heatmap(x,show_column_dend = FALSE,col=col1,cluster_columns = FALSE,cluster_rows = TRUE,show_row_dend = FALSE)
+
+
+```
+
+## correlation with integration status and outcome
+
+my definition of integration status is if there is a peak in the top 20 percent of cases with 167 bp
+
+nothing initially just by taking this. I'm going to try hierarchical insetad.
+
+BE AWARE I NEED TO REORDER SOME OF THIS
+
+```{r}
+
+# Assuming you want to filter rows where column '166' values are above the 90th percentile at Baseline
+baseline_quantile_90 <- df_prop_virus %>%
+  filter(Timepoint == "Baseline") %>%
+  summarise(quantile_90 = quantile(`166`, 0.90)) %>%
+  pull(quantile_90)
+
+baseline_quantile_60 <- df_prop_virus %>%
+  filter(Timepoint == "Baseline") %>%
+  summarise(quantile_60 = quantile(`166`, 0.60)) %>%
+  pull(quantile_60)
+
+
+
+df_top_hg_inHPV <- df_prop_virus %>%
+  filter(Timepoint == "Baseline") %>%
+  mutate(Top_10_Percent_Baseline = ifelse(Timepoint == "Baseline" & `166` > baseline_quantile_90, 
+                                          TRUE, FALSE)) %>% 
+  select(patient,Top_10_Percent_Baseline) %>% 
+  left_join(df_clinical_opc,by="patient")
+
+
+
+ggplot(df_top_hg_inHPV, aes(x = stage_n_ajcc8, y = seq_copies_mL_corrected1.67,color=Top_10_Percent_Baseline)) +
+  geom_jitter(width = 0.1) +
+  scale_y_log10() +
+  labs(
+    x = "sum_gtv_nodes",
+    y = "seq_copies_mL_corrected1.67"
+  )
+
+
+ggplot(df_top_hg_inHPV, aes(x = stage_t_ajcc8, y = seq_copies_mL_corrected1.67,color=Top_10_Percent_Baseline)) +
+  geom_jitter(width = 0.1) +
+  scale_y_log10() +
+  labs(
+    x = "sum_gtv_nodes",
+    y = "seq_copies_mL_corrected1.67"
+  )
+
+ggplot(df_top_hg_inHPV, aes(x = stage_ajcc8, y = seq_copies_mL_corrected1.67,color=Top_10_Percent_Baseline)) +
+  geom_jitter(width = 0.1) +
+  scale_y_log10() +
+  labs(
+    x = "sum_gtv_nodes",
+    y = "seq_copies_mL_corrected1.67"
+  )
+
+
+
+df_top_hg_inHPV <- df_prop_virus %>%
+  filter(Timepoint == "Baseline") %>%
+  mutate(Top_10_Percent_Baseline = ifelse(Timepoint == "Baseline" & `166` < baseline_quantile_90 & `166` >baseline_quantile_60, 
+                                          TRUE, FALSE))
+
+result = df_top_hg_inHPV %>% 
+  filter(Top_10_Percent_Baseline == TRUE) %>% 
+  arrange(desc(`167`))
+
+col1 = sequential_hcl(9, "Oslo")
+
+
+
+x = as.matrix(result[,c(50:180)])
+# rownames(x) = result$patient
+
+
+Heatmap(x,show_column_dend = FALSE,col=col1,cluster_columns = FALSE,cluster_rows = TRUE,show_row_dend = FALSE)
+
+```
+
+### for Baseline
+
+```{r fig.width=14}
+library(pheatmap)
+result = df_prop_virus %>% 
+  filter(Timepoint == "Baseline") %>% 
+  arrange(desc(`167`))
+
+x = as.matrix(result[,c(50:180)])
+rownames(x) = result$patient
+
+
+hm <- pheatmap( x,cluster_cols = FALSE,cluster_rows = TRUE,cutree_rows=2)
+pheatmap( x,cluster_cols = FALSE,cutree_rows=2)
+cl = cutree(hm$tree_row,2)
+ann = data.frame(cl)
+rownames(ann) = rownames(x)
+pheatmap(x,cluster_cols = FALSE, scale = 'row',cutree_rows = 2,annotation_row=ann)
+hg_df = ann %>% 
+  mutate(patient=rownames(ann)) %>% 
+  left_join(filter(df_clinical_opc,Timepoint=="Baseline")) %>% 
+  filter(cl == 1 | cl ==2) %>% 
+  mutate(cl = ifelse(cl==1,"A","B"))
+  
+
+
+
+ggplot(hg_df, aes(x = stage_n_ajcc8, y = seq_copies_mL_corrected1.67,color=cl)) +
+  geom_jitter(width = 0.1) +
+  scale_y_log10() +
+  labs(
+    x = "sum_gtv_nodes",
+    y = "seq_copies_mL_corrected1.67"
+  )
+
+
+ggplot(hg_df, aes(x = stage_t_ajcc8, y = seq_copies_mL_corrected1.67,color=cl)) +
+  geom_jitter(width = 0.1) +
+  scale_y_log10() +
+  labs(
+    x = "sum_gtv_nodes",
+    y = "seq_copies_mL_corrected1.67"
+  )
+
+ggplot(hg_df, aes(x = stage_ajcc8, y = seq_copies_mL_corrected1.67,color=cl)) +
+  geom_jitter(width = 0.1) +
+  scale_y_log10() +
+  labs(
+    x = "sum_gtv_nodes",
+    y = "seq_copies_mL_corrected1.67"
+  )
+
+ggplot(hg_df, aes(x = cl, y = seq_copies_mL_corrected1.67)) +
+  geom_point() +
+  geom_boxplot(alpha=0.5) + 
+  scale_y_log10() +
+  labs(
+    x = "sum_gtv_nodes",
+    y = "seq_copies_mL_corrected1.67"
+  ) + stat_compare_means(method = "t.test")
+
+
+ggplot(hg_df, aes(x = stage_t_ajcc8, y = seq_copies_mL_corrected1.67,color=cl)) +
+  geom_boxplot(alpha=0.7) +
+  geom_jitter(width = 0.2,alpha=0.9) +
+  scale_y_log10() +
+  labs(
+    x = "sum_gtv_nodes",
+    y = "seq_copies_mL_corrected1.67"
+  ) + stat_compare_means()
+
+
+
+ggplot(hg_df, aes(x = sum_gtv_nodes, y = seq_copies_mL_corrected1.67,color=cl)) +
+  geom_point() +
+  scale_y_log10() +
+  scale_x_log10() +
+  # geom_smooth(method = "lm") +
+  labs(
+    x = "sum_gtv_nodes",
+    y = "seq_copies_mL_corrected1.67"
+  ) 
+```
+
+### For mid RT
+
+```{r}
+# library(pheatmap)
+
+result = df_prop_virus %>% 
+  filter(Timepoint == "Mid RT") %>% 
+  arrange(desc(`167`)) %>% 
+  filter(!is.na(patient))
+
+x = as.matrix(result[,c(50:200)])
+rownames(x) = result$patient
+
+
+hm <- pheatmap( x,cluster_cols = FALSE,cluster_rows = TRUE,cutree_rows=2)
+pheatmap( x,cluster_cols = FALSE,cutree_rows=2)
+cl = cutree(hm$tree_row,2)
+ann = data.frame(cl)
+rownames(ann) = rownames(x)
+pheatmap(x,cluster_cols = FALSE, scale = 'row',cutree_rows = 2,annotation_row=ann)
+hg_df = ann %>% 
+  mutate(patient=rownames(ann)) %>% 
+  left_join(filter(df_clinical_opc,Timepoint=="Mid RT")) %>% 
+  filter(cl == 1 | cl ==2) %>% 
+  mutate(cl = ifelse(cl==1,"A","B"))
+  
+
+ggplot(hg_df, aes(x = stage_n_ajcc8, y = seq_copies_mL_corrected1.67,color=cl)) +
+  geom_jitter(width = 0.1) +
+  scale_y_log10() +
+  labs(
+    x = "sum_gtv_nodes",
+    y = "seq_copies_mL_corrected1.67"
+  )
+
+
+ggplot(hg_df, aes(x = stage_t_ajcc8, y = seq_copies_mL_corrected1.67,color=cl)) +
+  geom_jitter(width = 0.1) +
+  scale_y_log10() +
+  labs(
+    x = "sum_gtv_nodes",
+    y = "seq_copies_mL_corrected1.67"
+  )
+
+ggplot(hg_df, aes(x = stage_ajcc8, y = seq_copies_mL_corrected1.67,color=cl)) +
+  geom_jitter(width = 0.1) +
+  scale_y_log10() +
+  labs(
+    x = "sum_gtv_nodes",
+    y = "seq_copies_mL_corrected1.67"
+  )
+
+ggplot(hg_df, aes(x = cl, y = seq_copies_mL_corrected1.67)) +
+  geom_boxplot(alpha=0.5) +
+  geom_point() +
+  scale_y_log10() +
+  labs(
+    x = "sum_gtv_nodes",
+    y = "seq_copies_mL_corrected1.67"
+  ) + stat_compare_means()
+
+
+
+ggplot(hg_df, aes(x = stage_ajcc8, y = seq_copies_mL_corrected1.67,color=cl)) +
+  geom_boxplot(alpha=0.7) +
+  geom_jitter(width = 0.2,alpha=0.9) +
+  scale_y_log10() +
+  labs(
+    x = "sum_gtv_nodes",
+    y = "seq_copies_mL_corrected1.67"
+  ) + stat_compare_means(method = "t.test")
+```
+
+### association with Integration score
+
+```{r}
+result = df_prop_virus %>% 
+  left_join(select(df_clinical_opc,Sample,IntegrationHigh,IntegrationTotal,Integration_score,seq_copies_mL_corrected1.67)) %>% 
+  filter(Timepoint == "Baseline" & (!is.na(Integration_score) & Integration_score>=0)) %>% 
+  arrange(desc(`167`)) %>% 
+  mutate(seq_copies_mL_corrected1.67 = log10(seq_copies_mL_corrected1.67+1))
+
+col1 = sequential_hcl(9, "Oslo")
+library(colorspace)
+
+
+
+x = as.matrix(result[,c(50:180)])
+rownames(x) = result$patient
+
+y = as.matrix(result[,`Integration_score`])
+rownames(y) = result$patient
+
+ht1 = Heatmap(x,show_column_dend = FALSE,col=col1,cluster_columns = FALSE,cluster_rows = F,show_row_dend = F)
+
+ht2 = Heatmap(y,show_column_dend = FALSE,col=col1,cluster_columns = FALSE,cluster_rows = FALSE,show_row_dend = FALSE,width = 5)
+
+
+ht_list = ht1 + ht2 
+
+draw(ht_list)
+```
+
+# Random Survival Analysis
+
+this is splitting by the histogram.
+
+```{r}
+
+library(survival)
+library(survminer)
+
+# attach('/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/HPV_analysis_dataframes.Rdata'); df_clinical_ctdna <- df_clinical_ctdna
+
+
+# df_outcome <- hg_df %>%
+#   select(patient,cl) %>%
+#   left_join(df_clinical_ctdna,by="patient")
+
+
+# #########################
+# # this is using the heatmap method.
+# ########################
+# df_outcome <- hg_df %>%
+#   select(Sample, patient,IntegrationTotal, Timepoint,cl) %>%
+#   right_join(df_clinical_ctdna, by = "patient") %>%
+#   mutate(IntegrationStatus = ifelse(!is.na(IntegrationTotal),"int",ifelse(cl == "A", "int", "NOINT"))) %>%
+#   mutate(IntegrationStatus = ifelse(is.na(IntegrationStatus),"NOINT",IntegrationStatus)) #%>%
+#   # mutate(IntegrationStatus = ifelse(is.na(IntegrationTotal),"NOINT","int"))
+# 
+# 
+# z = df_outcome %>%
+#   select(patient,IntegrationTotal,cl,IntegrationStatus)
+
+#########################
+# this is using just the top X%
+########################
+# df_outcome <- hg_df %>%
+#   select(Sample, patient,IntegrationTotal,Timepoint,cl) %>%
+#   filter(Timepoint == "Mid RT") %>%
+#   left_join(select(df_top_hg_inHPV,patient,Top_10_Percent_Baseline)) %>% 
+#   mutate(IntegrationStatus = ifelse(!is.na(IntegrationTotal),"int",ifelse(Top_10_Percent_Baseline == TRUE, "int", "NOINT"))) %>%
+#   # mutate(IntegrationStatus = ifelse(!is.na(IntegrationTotal),"int","NOINT")) %>%
+#   left_join(df_clinical_ctdna, by = "patient")
+
+# #########################
+# # this is using the seq copies 
+# ########################
+# df_outcome <- hg_df %>%
+#   select(Sample, patient,IntegrationTotal, Timepoint,cl,seq_copies_mL_corrected1.67) %>%
+#   right_join(df_clinical_ctdna, by = "patient") %>% 
+#   mutate(IntegrationStatus = ifelse(seq_copies_mL_corrected1.67 >  mean(hg_df$seq_copies_mL_corrected1.67,na.rm = TRUE),"HIGH","LOW")) #%>%
+#   # mutate(IntegrationStatus = ifelse(is.na(IntegrationTotal),"NOINT","int"))
+# 
+#   
+# z = df_outcome %>% 
+#   select(patient,IntegrationTotal,cl,IntegrationStatus)
+
+
+
+# Updated code to fix the get_survplot function
+get_survplot <- function(df, surv_col_name, factor_col, title) {
+
+  # Construct the formula from strings
+  formula_str <- paste(surv_col_name, "~", factor_col)
+  formula_obj <- as.formula(formula_str)
+
+  survfit_obj <- surv_fit(formula_obj, data = df)
+
+  p_survfit <- ggsurvplot(
+    survfit_obj,
+    pval = TRUE) + ggtitle(title) 
+  return(p_survfit$plot)
+}
+
+
+vars <- c("IntegrationStatus")
+
+
+
+
+## Make the survival plots by mutation
+plot_list <- list()
+
+for (var in vars) {
+  rfsplot <- get_survplot(df_outcome,"surv_recurrence",var,paste0("RFS by median split of ",var))
+  pfsplot <- get_survplot(df_outcome,"surv_progression",var,paste0("PFS by median split of ",var))
+  osplot <- get_survplot(df_outcome,"surv_overall",var,paste0("OS by median split of ",var))
+
+  # Store plots in the list
+  plot_list[[paste0(var, "rfsplot")]] <- rfsplot #+ theme(legend.position = 'none')
+  plot_list[[paste0(var, "pfsplot")]] <- pfsplot #+ theme(legend.position = 'none')
+  plot_list[[paste0(var, "osplot")]] <- osplot #+ theme(legend.position = 'none')
+}
+
+plot_list
+```
+
+## Baseline Results for IntegrationHigh
+
+```{r}
+
+library(survival)
+library(survminer)
+
+# attach('/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/HPV_analysis_dataframes.Rdata'); df_clinical_ctdna <- df_clinical_ctdna
+
+
+#########################
+# Method one integration
+########################
+# df_outcome <- df_clinical_opc %>%
+#   select(Sample, patient,Integration_score,IntegrationHigh,IntegrationLow, Timepoint) %>%
+#   filter(Timepoint == "Baseline") %>%
+#   left_join(df_clinical_ctdna, by = "patient") %>%
+#   left_join(select(hg_df,patient,Timepoint,cl)) %>%
+#   mutate(
+#     IntegrationStatus = case_when(
+#       Integration_score > 0 | cl == "A" ~ "int",
+#       # Integration_score < 2  ~ "lowint",
+#       is.na(Integration_score) ~ "NOINT"  # Default condition
+#     ))
+
+
+
+# df_outcome <- df_clinical_opc %>%
+#   select(Sample, patient,Integration_score,IntegrationHigh,IntegrationLow, Timepoint) %>%
+#   filter(Timepoint == "Baseline") %>%
+#   left_join(df_clinical_ctdna, by = "patient") %>%
+#   left_join(select(hg_df,patient,Timepoint,cl)) %>%
+#   mutate(
+#     IntegrationStatus = case_when(
+#       Integration_score > 2 ~ "int",
+#       Integration_score < 2 ~ "lowint",
+#       is.na(Integration_score) ~ "NOINT"  # Default condition
+#     ))
+
+# #########################
+# # Method two integration
+# ########################
+# df_outcome <- df_clinical_opc %>%
+#   select(Sample, patient,IntegrationHigh,IntegrationLow,Integration_score, Timepoint) %>%
+#   filter(Timepoint == "Baseline") %>%
+#   left_join(df_clinical_ctdna, by = "patient") %>%
+#   left_join(select(hg_df,patient,Timepoint,cl)) %>%
+#   mutate(
+#     IntegrationStatus = case_when(
+#       cl == "A" ~ "int",
+#       cl == "B" ~ "lowint",
+#       is.na(cl) ~ "NOINT"  # Default condition
+#     ))
+
+
+# #########################
+# # Method with baseline prop
+# ########################
+# df_outcome <- df_clinical_opc %>%
+#   select(Sample, patient,IntegrationHigh,IntegrationLow,Integration_score, Timepoint) %>%
+#   filter(Timepoint == "3 Month") %>%
+#   left_join(select(summarized_df,patient,`3 Month`)) %>% 
+#   left_join(df_clinical_ctdna, by = "patient") %>%
+#   # left_join(select(hg_df,patient,Timepoint,cl)) %>%
+#   mutate(
+#     IntegrationStatus = case_when(
+#       `3 Month` > 0.5 ~ "high",
+#       `3 Month` < 0.5 ~ "low",
+#       is.na(`3 Month`) ~ "NA"  # Default condition
+#     ))
+
+
+
+  # mutate(
+  #   IntegrationStatus = case_when(
+  #     Integration_score > 2 | cl == "A" ~ "int",
+  #     Integration_score < 2 ~ "lowint",
+  #     is.na(Integration_score) ~ "NOINT"  # Default condition
+  #   ))
+
+# #########################
+# # this is using the heatmap method.
+# ########################
+# df_outcome <- df_clinical_opc %>% 
+#   select(Sample, patient,IntegrationHigh,IntegrationLow, Timepoint) %>% 
+#   filter(Timepoint == "Baseline") %>% 
+#   left_join(df_clinical_ctdna, by = "patient") %>% 
+#   left_join(select(hg_df,patient,Timepoint,cl)) %>% 
+#   mutate(IntegrationStatus = ifelse(IntegrationHigh>0,"highint",ifelse(IntegrationLow>1,"highint","noINT"))) %>% 
+#   mutate(IntegrationStatus = ifelse(is.na(IntegrationStatus),"noINT",IntegrationStatus)) 
+
+
+#############
+#other
+###########
+df_outcome <- df_clinical_opc %>%
+  select(Sample, patient,Integration_score,IntegrationHigh,IntegrationLow, Timepoint) %>%
+  filter(Timepoint == "Baseline") %>%
+  left_join(df_clinical_ctdna, by = "patient") %>%
+  left_join(select(hg_df,patient,Timepoint,cl)) %>%
+  mutate(
+    IntegrationStatus = case_when(
+       cl == "A" ~ "int",
+       cl == "B" ~ "no int",
+       is.na(cl) ~ "idk"  # Default condition
+    ))
+
+# Updated code to fix the get_survplot function
+get_survplot <- function(df, surv_col_name, factor_col, title) {
+
+  # Construct the formula from strings
+  formula_str <- paste(surv_col_name, "~", factor_col)
+  formula_obj <- as.formula(formula_str)
+
+  survfit_obj <- surv_fit(formula_obj, data = df)
+
+  p_survfit <- ggsurvplot(
+    survfit_obj,
+    pval = TRUE) + ggtitle(title) 
+  return(p_survfit$plot)
+}
+
+
+vars <- c("IntegrationStatus")
+
+
+
+
+## Make the survival plots by mutation
+plot_list <- list()
+
+for (var in vars) {
+  rfsplot <- get_survplot(df_outcome,"surv_recurrence",var,paste0("RFS by median split of ",var))
+  pfsplot <- get_survplot(df_outcome,"surv_progression",var,paste0("PFS by median split of ",var))
+  osplot <- get_survplot(df_outcome,"surv_overall",var,paste0("OS by median split of ",var))
+
+  # Store plots in the list
+  plot_list[[paste0(var, "rfsplot")]] <- rfsplot #+ theme(legend.position = 'none')
+  plot_list[[paste0(var, "pfsplot")]] <- pfsplot #+ theme(legend.position = 'none')
+  plot_list[[paste0(var, "osplot")]] <- osplot #+ theme(legend.position = 'none')
+}
+
+plot_list
+```
+
+## Saving fragment length profiles across timepoints per patient
+
+```{r}
+df_high167 = df_clinical_opc 
+
+
+patient_ID = unique(df_high167$patient)
+i=40
+  
+  df_high167_long = df_prop_virus %>%
+    filter(patient %in% patient_ID[i]) %>%
+    select(-Sample, -patient) %>%
+    pivot_longer(cols = -c(Timepoint), names_to = "length", values_to = "proportion") %>%
+    mutate(length = as.numeric(length))
+
+  # Create ggplot object and store it in the list
+  plot_sample = ggplot(df_high167_long, aes(x = length, y = proportion, color = Timepoint, group = Timepoint)) +
+    geom_line() +
+    labs(title = paste("Proportion of Virus Over Time for Patient", patient_ID[i]),
+         x = "Length",
+         y = "Proportion") +
+  scale_x_continuous(breaks = seq(0, max(df_high167_long$length), by = 5))
+  plot_sample
+  
+
+```
+
+```{r}
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(patchwork)
+
+
+df_high167 = df_clinical_opc 
+# %>%   filter(IntegrationTotal > 4)
+  
+
+patient_ID = unique(df_high167$patient)
+
+for (i in 1:length(patient_ID)) {
+  
+  df_high167_long = df_prop_virus %>%
+    filter(patient %in% patient_ID[i]) %>%
+    select(-Sample, -patient) %>%
+    pivot_longer(cols = -c(Timepoint), names_to = "length", values_to = "proportion") %>%
+    mutate(length = as.numeric(length))
+
+  # Create ggplot object and store it in the list
+  plot_sample = ggplot(df_high167_long, aes(x = length, y = proportion, color = Timepoint, group = Timepoint)) +
+    geom_line() +
+    labs(title = paste("Proportion of Virus Over Time for Patient", patient_ID[i]),
+         x = "Length",
+         y = "Proportion") 
+  plot_sample
+  # Save the combined plot as a PNG file
+  plot_name = paste0("~/Desktop/Alive/",patient_ID[i],"_combined_plot.png")
+  ggsave(plot_name, plot_sample, width = 4, height = 4, dpi = 300)
+}
+
+
+
+```
+
+## LCR entropy
+
+I got the LCR fragment lengths and ran some of the analysis here... no surival data to support difference.
+
+```{r eval = FALSE}
+df_fragment_lcr = fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/fragmentLength/summary_output.txt")
+df_fragment_lcr$Sample <- gsub("_dedup.*", "", df_fragment_lcr$Sample)
+
+
+df_prop_lcr1 <- df_fragment_lcr %>%
+  # Calculate the sum of columns 3 through 603
+  mutate(total_sum = rowSums(.[, 53:253])) %>%
+  dplyr::select(Sample, everything()) %>%
+  left_join(select(df_clinical_opc, Sample, Timepoint,patient),by=c("Sample")) %>% 
+  filter(total_sum > 10) %>%
+  # Divide each column by the respective total_sum
+  mutate(across(53:253, ~ . / total_sum)) %>% 
+  dplyr::select(Sample,Timepoint,patient,53:253) %>%
+  filter(Timepoint =="Baseline") %>% 
+  arrange(Sample)
+  
+  
+
+df_prop_lcr <- df_prop_virus %>%
+  mutate(shannon_entropy = pmap_dbl(select(., 4:204), function(...) {
+    # Capture all arguments as a numeric vector
+    values <- c(...)
+
+    # Calculate frequencies (ensure no division by zero)
+    frequencies <- values 
+    frequencies <- frequencies[frequencies > 0] # Remove zeros to avoid log(0)
+
+    # Calculate Shannon entropy
+    entropy <- -sum(frequencies * log(frequencies)) / log(length(frequencies))
+    return(entropy)
+  })) %>% 
+  select(patient,shannon_entropy) %>%
+  mutate(median_se = case_when(
+    shannon_entropy >= quantile(shannon_entropy, 0.9) ~ "high",
+    TRUE ~ "low"))
+
+
+# df_multi <- df_prop_lcr %>%
+#   right_join(df_clinical_ctdna, by = "patient")
+#   
+# 
+# 
+# # Updated code to fix the get_survplot function
+# get_survplot <- function(df, surv_col_name, factor_col, title) {
+# 
+#   # Construct the formula from strings
+#   formula_str <- paste(surv_col_name, "~", factor_col)
+#   formula_obj <- as.formula(formula_str)
+# 
+#   survfit_obj <- surv_fit(formula_obj, data = df)
+# 
+#   p_survfit <- ggsurvplot(
+#     survfit_obj,
+#     pval = TRUE,risk.table = TRUE) + ggtitle(title) 
+#   return(p_survfit)
+# }
+# 
+# 
+# vars <- c("median_se")
+# 
+# 
+# ## Make the survival plots by mutation
+# plot_list <- list()
+# 
+# for (var in vars) {
+#   rfsplot <- get_survplot(df_multi,"surv_recurrence",var,paste0("RFS by median split of ",var))
+#   pfsplot <- get_survplot(df_multi,"surv_progression",var,paste0("PFS by median split of ",var))
+#   osplot <- get_survplot(df_multi,"surv_overall",var,paste0("OS by median split of ",var))
+# 
+#   # Store plots in the list
+#   plot_list[[paste0(var, "rfsplot")]] <- rfsplot #+ theme(legend.position = 'none')
+#   plot_list[[paste0(var, "pfsplot")]] <- pfsplot #+ theme(legend.position = 'none')
+#   plot_list[[paste0(var, "osplot")]] <- osplot #+ theme(legend.position = 'none')
+# }
+# 
+# plot_list
+```
+
+trying with copy/Ml now.
+
+```{r}
+df_fragment_lcr = fread("/Users/lucaspenny/Documents/1 Bratman/head_neck_analysis_lucas/data/fragmentLength/summary_output.txt")
+df_fragment_lcr$Sample <- gsub("_dedup.*", "", df_fragment_lcr$Sample)
+
+
+df_prop_lcr1 <- df_fragment_lcr %>%
+  # Calculate the sum of columns 3 through 603
+  mutate(total_sum = rowSums(.[, 53:303])) %>%
+  dplyr::select(Sample, everything()) %>%
+  left_join(select(df_clinical_opc, Sample, Timepoint,patient),by=c("Sample")) %>% 
+  filter(total_sum > 10) %>%
+  # Divide each column by the respective total_sum
+  mutate(across(53:303, ~ . / total_sum)) %>% 
+  dplyr::select(Sample,Timepoint,patient,53:303) %>%
+  filter(Timepoint =="Baseline") %>% 
+  arrange(Sample)
+  
+  
+
+df_prop_lcr <- df_prop_lcr1 %>%
+  mutate(shannon_entropy = pmap_dbl(select(., 4:84), function(...) {
+    # Capture all arguments as a numeric vector
+    values <- c(...)
+
+    # Calculate frequencies (ensure no division by zero)
+    frequencies <- values / sum(values) 
+    frequencies <- frequencies[frequencies > 0] # Remove zeros to avoid log(0)
+
+    # Calculate Shannon entropy
+    entropy <- -sum(frequencies * log(frequencies)) / log(length(frequencies))
+    return(entropy)
+  })) 
+  # %>% select(patient,shannon_entropy)
+
+
+
+
+
+
+result = df_prop_lcr %>% 
+  arrange('167')
+
+col1 = sequential_hcl(9, "Oslo")
+
+
+
+x = as.matrix(result[,c(4:204)])
+rownames(x) = result$patient
+
+y = as.matrix(result[,`shannon_entropy`])
+rownames(y) = result$patient
+
+ht1 = Heatmap(x,show_column_dend = FALSE,col=col1,cluster_columns = FALSE,cluster_rows = FALSE,show_row_dend = FALSE)
+
+ht2 = Heatmap(y,show_column_dend = FALSE,col=col1,cluster_columns = FALSE,cluster_rows = TRUE,show_row_dend = FALSE,width = 5,name="entropy")
+
+
+ht_list = ht1 + ht2 
+
+draw(ht_list,main_heatmap = "entropy")
+
+
+```
+
+```{r}
+df_clin_lcr  = df_clinical_opc %>%
+  select(patient,Timepoint,seq_copies_mL_corrected1.67,stage_n_ajcc8,stage_t_ajcc8,stage_ajcc8,sum_gtv_nodes,gtv_primary) %>% 
+  filter(Timepoint == "Baseline") %>% 
+  left_join(df_prop_lcr) %>% 
+  # filter(shannon_entropy >0.7) %>% 
+  mutate(test = shannon_entropy*seq_copies_mL_corrected1.67)
+
+x = lm(log10(seq_copies_mL_corrected1.67+1) ~shannon_entropy ,df_clin_lcr)
+summary(x)
+
+
+ggplot(df_clin_lcr, aes(x = shannon_entropy, y = seq_copies_mL_corrected1.67)) +
+  geom_point() +
+  scale_y_log10() 
+
+ggplot(df_clin_lcr, aes(x = shannon_entropy, y = gtv_primary)) +
+  geom_point() +
+  scale_y_log10() + scale_x_log10() 
+
+ggplot(df_clin_lcr, aes(x = shannon_entropy, y = sum_gtv_nodes)) +
+  geom_point() +
+  scale_y_log10() 
+
+
+
+df_test <- df_clin_lcr %>%
+  select(seq_copies_mL_corrected1.67, sum_gtv_nodes, gtv_primary,shannon_entropy,test) %>%
+  mutate(across(c(seq_copies_mL_corrected1.67, sum_gtv_nodes, gtv_primary,test), ~log10(. + 1)))
+
+ggpairs(df_test,progress=FALSE)
+ 
+
+
+
+```
+
+```{r}
+
+```
+
+# Log2 fold change
+
+```{r}
+
+df_log_change = df_prop_virus %>% 
+  
+```

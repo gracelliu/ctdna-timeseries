@@ -1,0 +1,1848 @@
+---
+title: "NPC EBV DNA Retrospective"
+author: "Eric Zhao"
+date: "2023-02-02"
+output: html_document
+---
+
+# EBV DNA in Nasopharyngeal Cancer
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, dev=c('png', 'pdf', 'svg'), fig.path='figures/ebvdna/')
+library(tidyverse)
+library(zoo)
+library(ggbeeswarm)
+library(lubridate)
+library(survival)
+library(survminer)
+library(viridis)
+library(forestmodel)
+library(gtsummary)
+library(cowplot)
+
+# -------------------------------------------------- #
+# Process the EBV retrospective review data from LMP #
+# -------------------------------------------------- #
+
+df_ebv_full <- read_csv(
+    'data/ctdna/2022-01-05 EBV Retrospective Full Cohort.csv',
+    col_types = cols(
+      'MRN' = col_character()
+    )
+  ) %>%
+  filter(!is.na(value)) %>%
+  dplyr::rename(mrn = MRN) %>%
+  mutate(
+    mrn = na.locf(mrn),
+    value_str = value,
+    value = as.numeric(value),
+    value_str = ifelse(is.na(value), value_str, NA),
+    value = case_when(
+      value_str == '2012712.76 (outside linear range)' ~ 2012712.76,
+      value_str == 'NEG X 2' ~ 0,
+      TRUE ~ value
+    ),
+    timepoint = factor(timepoint, levels = c('initial', 'follow-up')),
+    date_ebv = parse_date(`acc date`, '%m/%d/%Y'),
+    date_ebv = if_else(is.na(date_ebv), parse_date(`acc date`, '%Y-%m-%d'), date_ebv),
+    mrn = paste0(
+      sapply(
+        7 - nchar(mrn),
+        function(n) {
+          paste(rep('0', n), collapse='')
+        }),
+      mrn
+    ),
+    log_ebv = log(1 + value)
+  )
+
+df_ebv <- df_ebv_full %>%
+  filter(!is.na(value)) %>%
+  filter(mrn != '4157779') %>% # remove due to mangled date
+  filter(mrn != '4368651')
+
+df_ebv %>%
+  filter(is.na(date_ebv))
+
+# ------------------------------------------------------------ #
+# Process the associated clinical outcomes data from Anthology #
+# ------------------------------------------------------------ #
+
+levels_stage <- c('I', 'II', 'III', 'IVA', 'IVB')
+levels_stage_t <- c('T1', 'T2', 'T3', 'T4')
+levels_stage_n <- c('N0', 'N1', 'N2', 'N3')
+
+df_clinical <- read_csv(
+  'data/clinical/npc_ebv_paper/Anth 2022-09-08 -SVB-NPC pull.csv',
+  col_types = cols(
+    'mrn' = col_character(),
+    'date_of_dx' = col_date('%m-%d-%Y'),
+    'rt_start' = col_date('%m-%d-%Y'),
+    'rt_end' = col_date('%m-%d-%Y'),
+    'date_local_recurrence' = col_date('%m-%d-%Y'),
+    'date_regional_recurrence' = col_date('%m-%d-%Y'),
+    'date_distant_recurrence' = col_date('%m-%d-%Y'),
+    'date_last_fu' = col_date('%m-%d-%Y')
+  )
+) %>% 
+  mutate(
+    dose_fractionation = paste(rt_dose, rt_fx, sep='/'),
+    
+    local_recurrence = grepl('yes', tolower(local_recurrence)),
+    regional_recurrence = grepl('yes', tolower(regional_recurrence)),
+    distant_recurrence = grepl('yes', tolower(distant_recurrence)),
+    
+    recurrence = local_recurrence | regional_recurrence | distant_recurrence,
+    date_recurrence = if_else(
+        is.na(date_local_recurrence) & is.na(date_regional_recurrence) & is.na(date_distant_recurrence),
+        date_last_fu,
+        pmin(date_local_recurrence, date_regional_recurrence, date_distant_recurrence, na.rm=T)
+      ),
+    time_to_recurrence = interval(rt_start, date_recurrence) %/% days(1) / (365/12),
+    surv_recurrence = Surv(time_to_recurrence, recurrence),
+    
+    death = vital_status == 'Dead',
+    time_to_death = interval(date_of_dx, date_last_fu) %/% days(1) / (365/12),
+    surv_overall = Surv(time_to_death, death),
+    
+    progression = recurrence | death,
+    date_progression = if_else(recurrence, date_recurrence, date_last_fu),
+    time_to_progression = interval(date_of_dx, date_progression) %/% days(1) / (365/12),
+    surv_progression = Surv(time_to_progression, progression)
+  ) %>%
+  mutate(
+    cause_of_death = case_when(
+      grepl('Index', cause_of_death) ~ 'Index Cancer',
+      grepl('Other Cancer', cause_of_death) ~ 'Other Cancer',
+      grepl('Other Cause', cause_of_death) ~ 'Other Cause',
+      TRUE ~ cause_of_death
+    ),
+    stage_t_ajcc7 = case_when(
+      stage_t_ajcc7 == 'T3 (2)' ~ 'T3',
+      TRUE ~ stage_t_ajcc7
+    ),
+    stage_n_ajcc7 = case_when(
+      startsWith(stage_n_ajcc7, 'N3') ~ 'N3',
+      TRUE ~ stage_n_ajcc7
+    ),
+    stage_ajcc7 = factor(stage_ajcc7, levels_stage),
+    stage_t_ajcc7 = factor(stage_t_ajcc7, levels = levels_stage_t),
+    stage_n_ajcc7 = factor(stage_n_ajcc7, levels = levels_stage_n),
+    stage_t_ajcc7_int = as.integer(stage_t_ajcc7),
+    stage_n_ajcc7_int = as.integer(stage_n_ajcc7),
+    smoking_hx = factor(smoking_hx, levels = c('Non-smoker', 'Ex-smoker', 'Current')),
+    drinking_hx = factor(drinking_hx, levels = c('non-drinker', 'ex-drinker', 'light', 'Moderate', 'heavy')),
+    sex = factor(sex, levels = c('Male', 'Female')),
+    ecog = gsub('ECOG ', '', ecog) %>% as.integer,
+    rt_regimen = case_when(
+      rt_intent == 'radical' ~ 'RT alone',
+      grepl('AC', rt_intent) ~ 'CRT + AC',
+      TRUE ~ 'CRT'
+    ),
+    adjuvant_chemo = rt_regimen == 'CRT + AC'
+  ) %>%
+  mutate(
+    recurrence_pattern = case_when(
+      !is.na(date_distant_recurrence-date_local_recurrence) & (date_distant_recurrence-date_local_recurrence)<30 ~ 'Distant',
+      !is.na(date_distant_recurrence-date_regional_recurrence) & (date_distant_recurrence-date_regional_recurrence)<30 ~ 'Distant',
+      !is.na(date_regional_recurrence-date_local_recurrence) & (date_regional_recurrence-date_local_recurrence)<60 ~ 'Regional',
+      !is.na(date_local_recurrence) ~ 'Local',
+      !is.na(date_regional_recurrence) ~ 'Regional',
+      !is.na(date_distant_recurrence) ~ 'Distant',
+      TRUE ~ 'No recurrence'
+    ) %>% factor(
+      levels = c('No recurrence', 'Local', 'Regional', 'Distant')
+    ),
+    etime = case_when(
+      !is.na(date_distant_recurrence-date_local_recurrence) & (date_distant_recurrence-date_local_recurrence)<60 ~ interval(rt_start, date_distant_recurrence) %/% days(1) / (365/12),
+      !is.na(date_distant_recurrence-date_regional_recurrence) & (date_distant_recurrence-date_regional_recurrence)<60 ~ interval(rt_start, date_distant_recurrence) %/% days(1) / (365/12),
+      !is.na(date_regional_recurrence-date_local_recurrence) & (date_regional_recurrence-date_local_recurrence)<60 ~ interval(rt_start, date_regional_recurrence) %/% days(1) / (365/12),
+      !is.na(date_local_recurrence) ~ interval(rt_start, date_local_recurrence) %/% days(1) / (365/12),
+      !is.na(date_regional_recurrence) ~ interval(rt_start, date_regional_recurrence) %/% days(1) / (365/12),
+      !is.na(date_distant_recurrence) ~ interval(rt_start, date_distant_recurrence) %/% days(1) / (365/12),
+      TRUE ~ interval(rt_start, date_last_fu) %/% days(1) / (365/12)
+    )
+  )
+
+df_chemo <- read_csv(
+    'data/clinical/2023-02-07 Review Request ESZ SVB - NPC Adjuvant Chemo-SHH.csv',
+    col_types = cols(
+      'CC - Cycle 1' = col_date('%Y-%m-%d'),
+      'CC - Cycle 2' = col_date('%Y-%m-%d'),
+      'CC - Cycle 3' = col_date('%Y-%m-%d'),
+      'AC - Cycle 1' = col_date('%Y-%m-%d'),
+      'AC - Cycle 2' = col_date('%Y-%m-%d'),
+      'AC - Cycle 3' = col_date('%Y-%m-%d')
+    )
+  ) %>%
+  dplyr::rename(mrn = MRN) %>%
+  mutate(
+    mrn = paste0(
+        sapply(
+          7 - nchar(mrn),
+          function(n) {
+            paste(rep('0', n), collapse='')
+          }),
+        mrn
+    )
+  )
+    
+
+df_chemo_ac <- df_chemo %>%
+  select(mrn, `1`=`AC - Cycle 1`, `2`=`AC - Cycle 2`, `3`=`AC - Cycle 3`) %>%
+  gather(cycle, date, -mrn) %>%
+  mutate(cycle = as.integer(cycle)) %>%
+  group_by(mrn) %>%
+  filter(!is.na(date)) %>%
+  summarise(
+    date_ac_start = date[cycle == min(cycle)],
+    date_ac_end = date[cycle == max(cycle)]
+  )
+
+
+df_ebv_clinical_full <- df_ebv %>%
+  inner_join(df_clinical, by = 'mrn') %>%
+  left_join(df_chemo_ac) %>%
+  group_by(mrn) %>%
+  arrange(date_ebv) %>%
+  mutate(
+    timepoint_category = case_when(
+      (rt_start - date_ebv) >= 0 & (rt_start - date_ebv) <= 90 ~ 'Pre-RT',
+      (date_ebv - rt_end) >= 0 & (date_ebv - rt_end) < (365) ~ 'Early post-RT',
+      (date_ebv - rt_end) >= (365) ~ 'Late post-RT',
+      TRUE ~ 'During RT'
+    )
+  ) %>%
+  group_by(mrn) %>%
+  arrange(mrn, date_ebv) %>%
+  mutate(
+    first_post_rt = (timepoint_category == 'Early post-RT') & (`copath #` == `copath #`[timepoint_category == 'Early post-RT'][1]),
+    first_post_ac = case_when(
+      is.na(date_ac_end) ~ first_post_rt,
+      TRUE ~ (timepoint_category == 'Early post-RT') & (`copath #` == `copath #`[date_ebv > date_ac_end][1])
+    )
+  ) %>%
+  ungroup()
+
+df_ebv_clinical_prert <- df_ebv_clinical_full %>%
+  filter(timepoint_category ==  'Pre-RT') %>%
+  arrange(mrn, date_ebv) %>%
+  group_by(mrn) %>%
+  filter(row_number() == n()) %>%
+  ungroup()
+
+df_ebv_clinical_prertdetectable_firstpostrt <- df_ebv_clinical_full %>%
+  filter(
+    mrn %in% (df_ebv_clinical_prert %>% filter(value > 0) %>% .$mrn)
+  ) %>%
+  filter(first_post_rt) %>%
+  mutate(
+    clearance = value == 0,
+    months_from_rt_end = as.numeric((date_ebv - rt_end)/30)
+  )
+
+df_ebv_clinical_prertdetectable_firstpostac <- df_ebv_clinical_full %>%
+  filter(
+    mrn %in% (df_ebv_clinical_prert %>% filter(value > 0) %>% .$mrn)
+  ) %>%
+  filter(first_post_ac) %>%
+  mutate(
+    clearance = value == 0,
+    months_from_rt_end = as.numeric((date_ebv - rt_end)/30)
+  )
+
+df_ebv_clinical <- df_ebv_clinical_full %>%
+  filter(mrn %in% df_ebv_clinical_prert$mrn)
+
+
+
+df_ebv_clinical_full %>%
+  mutate(received_ac = !is.na(date_ac_start)) %>%
+  distinct(mrn, first_post_rt, first_post_ac, received_ac) %>%
+  group_by(mrn) %>%
+  filter(any(first_post_rt)) %>%
+  distinct(mrn, received_ac) %>%
+  .$received_ac %>% sum
+
+
+df_clinical %>%
+  filter(
+    rt_start >= min(df_ebv_clinical_prert$rt_start)
+  )
+```
+
+Questions for Ian:
+- If value is NEG x 2, should we treat this like 0? Does it mean something different?
+- Confirm dates
+  - MRN 2999650, Copath# B14-13820
+  - MRN 2777289, Copath# B16-10775	
+  - MRN 3657974, Copath# B17-6929	
+  - MRN 4157779, Copath# B18-1191
+  - MRN 3917685, Copath# B11-7229	- Based on diagnosis/treatment dates, I suspect this lab test may have been recorded with the wrong year (should be 2011 instead of 2010), please confirm.
+
+Reasons for no reported values
+
+```{r}
+df_ebv_full %>%
+  filter(is.na(value)) %>%
+  count(`Reason data missing` = tolower(`reported first test`))
+
+df_ebv_full$mrn %>% unique %>% length
+```
+
+# Clinical Overview
+
+```{r}
+array_full_table_labels <- c(
+      sex = 'Sex',
+      age = 'Age at diagnosis',
+      ecog = 'ECOG Status',
+      stage_t_ajcc7 = 'T stage',
+      stage_n_ajcc7 = 'N stage',
+      stage_ajcc7 = 'Overall stage (AJCC8)',
+      smoking_hx = 'Smoking history',
+      smoking_py = 'Smoking packyears',
+      drinking_hx = 'Drinking history',
+      rt_regimen = 'RT Regimen',
+      rt_technique = 'RT technique',
+      local_recurrence = 'Local Failure',
+      regional_recurrence = 'Regional Failure',
+      distant_recurrence = 'Distant Failure',
+      vital_status = 'Vital Status'
+    )
+
+df_ebv_clinical_prert %>%
+  tbl_summary(
+    include = all_of(names(array_full_table_labels)),
+    label = array_full_table_labels
+  )
+
+df_ebv_clinical %>%
+  filter(rt_regimen == 'CRT + AC') %>%
+  distinct(mrn, rt_regimen, rt_intent) %>%
+  write_csv('~/Downloads/2023-02-07 Review Request ESZ SVB - NPC Adjuvant Chemo.csv')
+```
+
+
+```{r}
+array_partial_table_labels <- c(
+      sex = 'Sex',
+      age = 'Age at diagnosis',
+      ecog = 'ECOG Status',
+      stage_ajcc7 = 'Overall stage (AJCC8)',
+      rt_regimen = 'RT Regimen',
+      local_recurrence = 'Local Failure',
+      regional_recurrence = 'Regional Failure',
+      distant_recurrence = 'Distant Failure'
+    )
+
+df_ebv_clinical_prert %>%
+  tbl_summary(
+    include = all_of(names(array_partial_table_labels)),
+    label = array_partial_table_labels
+  )
+```
+
+
+```{r}
+survfit(
+  Surv(time_to_death, !death) ~ 1,
+  data = df_ebv_clinical %>%
+    distinct(mrn, death, time_to_death)
+)
+
+df_ebv_clinical %>%
+  distinct(mrn, recurrence, death) %>%
+  count(recurrence, death)
+```
+
+# EBV DNA results
+
+```{r exploratory_timeseries}
+pd_ebv_timepoint_count <- df_ebv %>%
+  group_by(mrn) %>%
+  summarise(
+    n_initial = sum(timepoint == 'initial'),
+    n_followup = sum(timepoint == 'follow-up')
+  )
+
+pd_ebv_timepoint_count %>%
+  ggplot(aes(
+    x = n_followup
+  )) +
+  geom_histogram() +
+  facet_wrap(~n_initial)
+
+df_ebv %>%
+  count(mrn) %>%
+  summarise(
+    median = median(n),
+    upper = max(n),
+    lower = min(n)
+  )
+
+df_ebv %>%
+  ggplot(aes(
+    x = timepoint,
+    y = value
+  )) +
+  geom_violin(fill = 'Grey80', color = NA) +
+  geom_boxplot(width = 0.2, outlier.shape = NA) +
+  geom_jitter(width = 0.05, size = 0.5) +
+  scale_y_log10()
+
+df_ebv %>%
+  arrange(timepoint, date_ebv) %>%
+  group_by(mrn) %>%
+  mutate(timepoint_idx = row_number()) %>%
+  ggplot(aes(
+    x = timepoint_idx,
+    y = value,
+    color = timepoint,
+    group = mrn
+  )) +
+  geom_line(color = 'grey80') +
+  geom_point() +
+  scale_y_log10() +
+  theme_bw() +
+  labs(
+    x = 'Timepoint Index',
+    y = 'EBV DNA copies'
+  )
+
+df_ebv %>%
+  filter(timepoint == 'follow-up', value != 0)
+```
+
+## Timeline of cfEBVDNA values
+
+```{r cohort_overview, fig.height = 20, fig.width = 6}
+pd_time_intervals_rt <- df_ebv_clinical %>%
+  distinct(
+    mrn,
+    rt_start,
+    rt_end,
+    date_of_dx
+  ) %>%
+  mutate(
+    time_to_rt_start = as.numeric((rt_start - date_of_dx)/365),
+    time_to_rt_end = as.numeric((rt_end - date_of_dx)/365)
+  ) %>%
+  arrange(time_to_rt_start) %>%
+  left_join(df_chemo_ac) %>%
+  mutate(
+    time_to_ac_start = as.numeric((date_ac_start - date_of_dx)/365),
+    time_to_ac_end = as.numeric((date_ac_end - date_of_dx)/365)
+  ) %>%
+  mutate(
+    mrn = factor(mrn, levels = unique(mrn))
+  )
+
+pd_time_intervals_ebv <- df_ebv_clinical %>%
+  select(
+    mrn,
+    date_ebv,
+    date_of_dx
+  ) %>%
+  mutate(
+    interval = as.numeric((date_ebv - date_of_dx)/365),
+    mrn = factor(mrn, levels = levels(pd_time_intervals_rt$mrn))
+  )
+
+pd_time_intervals_progression <- df_ebv_clinical %>%
+  select(
+    mrn,
+    date_of_dx,
+    date_progression,
+    progression
+  ) %>%
+  mutate(
+    time_to_progression = (date_progression - date_of_dx)/365,
+    mrn = factor(mrn, levels = levels(pd_time_intervals_rt$mrn))
+  )
+
+
+p_timeline <- ggplot() +
+  geom_point(
+    aes(
+      x = interval,
+      y = mrn
+    ),
+    data = pd_time_intervals_ebv,
+    color = 'grey30',
+    size = 1
+  ) +
+  geom_segment(
+    aes(
+      x = time_to_rt_start,
+      xend = time_to_rt_end,
+      y = mrn,
+      yend = mrn
+    ),
+    data = pd_time_intervals_rt
+  ) +
+  geom_segment(
+    aes(
+      x = time_to_ac_start,
+      xend = time_to_ac_end,
+      y = mrn,
+      yend = mrn
+    ),
+    data = pd_time_intervals_rt,
+    color = 'blue'
+  ) +
+  geom_point(
+    aes(
+      x = time_to_progression,
+      y = mrn
+    ),
+    data = pd_time_intervals_progression,
+    color = 'red',
+    shape = 4
+  )
+
+p_timeline +
+  xlim(
+    min(pd_time_intervals_ebv$interval),
+    max(pd_time_intervals_rt$time_to_ac_end, na.rm=T)
+  )
+
+df_ebv_clinical_full %>%
+  group_by(mrn) %>%
+  left_join(df_chemo_ac) %>%
+  summarise(
+    n_pre_rt = sum(date_ebv <= rt_start, na.rm=T),
+    n_during_rt = sum((date_ebv > rt_start) & (date_ebv < rt_end), na.rm=T),
+    n_post_rt = sum(date_ebv >= rt_end, na.rm=T),
+    adjuvant = unique(!is.na(date_ac_start)),
+    n_post_rt_pre_chemo = sum((date_ebv >= rt_end) & (date_ebv <= date_ac_start), na.rm=T),
+    n_during_chemo = sum((date_ebv > date_ac_start) & (date_ebv < date_ac_end), na.rm=T),
+    n_after_chemo = sum((date_ebv > date_ac_end) & (date_ebv < date_progression), na.rm=T),
+    n_after_progression = sum((date_ebv >= date_progression), na.rm=T)
+  ) %>%
+  ungroup() %>%
+  summarise(
+    `n patients total` = n(),
+    `n patients with a pre-RT timepoint` = sum(n_pre_rt > 0),
+    `n patients with during-RT timepoint` = sum(n_during_rt > 0),
+    `n patients with post-RT timepoint` = sum(n_post_rt > 0),
+    `n patients receiving adj chemo` = sum(adjuvant),
+    `n patients with post-RT and pre-chemo timepoint` = sum(n_post_rt_pre_chemo > 0),
+    `n patients with during AC timepoint` = sum(n_during_chemo > 0),
+    `n patients with after AC, pre-progression timepoint` = sum(n_after_chemo > 0),
+    `n patients with post-progression timepoint` = sum(n_after_progression > 0)
+  ) %>%
+  gather(metric, value)
+
+
+```
+
+Grab cases with all three timepoints for Saheli to retrospectively review.
+
+```{r}
+pd_time_intervals_rt
+pd_time_intervals_ebv
+df_ebv_clinical_prert
+df_ebv_clinical_prertdetectable_firstpostrt
+df_ebv_clinical_prertdetectable_firstpostrt
+
+v_mrn_alltimepoints <- df_ebv_clinical %>%
+  group_by(mrn) %>%
+  summarise(
+    pre_rt = any(date_ebv < rt_start),
+    post_rt = any(date_ebv > rt_end & date_ebv < date_ac_start),
+    post_ac = any((date_ebv > date_ac_end) & ((date_ebv - date_ac_end) < 365))
+  ) %>%
+  filter(pre_rt, post_rt, post_ac) %>%
+  .$mrn
+
+pd_ebv_alltimepoints <- df_ebv_clinical %>%
+  filter(mrn %in% v_mrn_alltimepoints) %>%
+  mutate(
+    timepoint = case_when(
+      date_ebv < rt_start ~ 'Pre-RT',
+      date_ebv > rt_end & date_ebv < date_ac_start ~ 'Post-RT',
+      date_ebv > date_ac_end ~ 'Post-AC',
+      TRUE ~ 'None'
+    ) %>% factor(levels = c('Pre-RT', 'Post-RT', 'Post-AC'))
+  ) %>%
+  arrange(date_ebv) %>%
+  group_by(mrn, timepoint) %>%
+  filter(row_number() == 1, !is.na(timepoint)) %>% 
+  ungroup()
+
+pd_ebv_alltimepoints %>%
+  ggplot(aes(
+    x = timepoint,
+    y = value,
+    group = mrn
+  )) +
+  geom_line() + 
+  geom_point() +
+  scale_y_log10()
+
+pd_ebv_alltimepoints %>%
+  select(mrn, timepoint, value, date_ebv) %>%
+  arrange(mrn, timepoint) %>%
+  pivot_wider(
+    id_cols = 'mrn',
+    names_from = c('timepoint'),
+    values_from = c('value', 'date_ebv')
+  ) %>%
+  left_join(pd_time_intervals_rt) %>%
+  select(-time_to_rt_start, -time_to_rt_end, -time_to_ac_start, -time_to_ac_end) %>%
+  left_join(df_chemo) %>%
+  left_join(df_clinical %>% select(-rt_start, -rt_end, -date_of_dx, -rt_regimen, -surv_overall, -surv_progression, -surv_recurrence)) %>%
+  write_csv('data/clinical/ebv_dna_triple_timepoint_for_saheli.csv')
+```
+
+## Clinical Practice
+
+### EBV assay ordering
+
+Number of EBV tests ordered between end of RT and reported progression or last follow-up.
+
+```{r clinical_usage, fig.width = 9, fig.height = 4}
+pd_ebv_usage <- df_ebv_clinical %>%
+  filter(date_ebv > rt_end, date_ebv < date_progression) %>%
+  group_by(mrn) %>%
+  summarise(
+    rt_end = unique(rt_end),
+    n_ebv_tests = n(),
+    mean_time_between_ebv_tests = as.numeric((max(date_ebv) - rt_end) / n_ebv_tests / 30),
+    time_to_first_followup_ebv = as.numeric((min(date_ebv[date_ebv > rt_end]) - rt_end) / n_ebv_tests / 30)
+  ) %>%
+  ungroup()
+
+pd_ebv_usage %>%
+  ggplot(aes(
+    x = rt_end,
+    y = mean_time_between_ebv_tests
+  )) +
+  geom_point() +
+  scale_y_log10() +
+  labs(
+    x = 'Date of RT completion',
+    y = 'Avg. months between EBV tests'
+  ) +
+  theme_bw()
+
+pd_ebv_usage %>%
+  ggplot(aes(
+    x = rt_end,
+    y = time_to_first_followup_ebv
+  )) +
+  geom_point() +
+  scale_y_log10() +
+  labs(
+    x = 'Date of RT completion',
+    y = 'Avg. months from RT end to first EBV test'
+  ) +
+  theme_bw()
+
+pd_postrt_testing <- df_ebv_clinical %>%
+  group_by(mrn) %>%
+  summarise(postrt_testing = any(first_post_rt)) %>%
+  filter(postrt_testing)
+
+pd_ebv_usage <- df_clinical %>%
+  mutate(
+    year = as.integer(gsub('(....)-..-..', '\\1', rt_start)),
+    month = as.integer(gsub('....-(..)-..', '\\1', rt_start)),
+    quarter = sprintf('%s Q%s', year, ceiling(month/3)),
+    prert_ebv = mrn %in% df_ebv_clinical_prert$mrn,
+    postrt_ebv = mrn %in% pd_postrt_testing$mrn,
+    any_ebv = mrn %in% df_ebv$mrn
+  ) %>%
+  group_by(year, quarter) %>%
+  summarise(
+    n_prert = sum(prert_ebv),
+    n_postrt = sum(postrt_ebv),
+    n_any_ebv = sum(any_ebv),
+    n_total = n(),
+    `Percent pre-RT tested` = n_prert / n_total * 100,
+    `Percent post-RT tested` = n_postrt / n_total * 100
+  ) %>%
+  ungroup() %>%
+  gather(metric, percent, `Percent pre-RT tested`, `Percent post-RT tested`)
+
+p_ebv_usage_byquarter_bar <- pd_ebv_usage %>%
+  distinct(quarter, n_total, n_prert, n_postrt) %>%
+  ggplot(aes(
+    x = quarter
+  )) +
+  geom_bar(aes(y = n_total), stat = 'identity') +
+  geom_bar(aes(y = n_prert), stat = 'identity', fill = RColorBrewer::brewer.pal(2, 'Set1')[2]) +
+  geom_bar(aes(y = n_postrt), stat = 'identity', fill = RColorBrewer::brewer.pal(2, 'Set1')[1]) +
+  labs(
+    x = 'Quarter',
+    y = 'Patients treated'
+  ) +
+  ggtitle('EBV DNA testing by quarter') +
+  theme_bw() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.ticks.x = element_blank()
+  ) +
+  labs(
+    y = 'NPC patients treated'
+  )
+
+p_ebv_usage_byquarter_line <- pd_ebv_usage %>%
+  ggplot(aes(
+    x = quarter,
+    y = percent,
+    group = metric,
+    color = metric
+  )) +
+  geom_line() +
+  geom_point() +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  labs(
+    x = 'Year of RT delivery',
+    y = 'Percent tested for EBV',
+    color = 'EBV DNA timepoint'
+  ) +
+  scale_color_brewer(palette = 'Set1')
+
+p_ebv_usage_byyear_bar <- pd_ebv_usage %>%
+  distinct(year, n_total, n_prert, n_postrt) %>%
+  ggplot(aes(
+    x = year
+  )) +
+  geom_bar(aes(y = n_total), stat = 'identity') +
+  geom_bar(aes(y = n_prert), stat = 'identity', fill = RColorBrewer::brewer.pal(2, 'Set1')[2]) +
+  geom_bar(aes(y = n_postrt), stat = 'identity', fill = RColorBrewer::brewer.pal(2, 'Set1')[1]) +
+  labs(
+    x = 'Quarter',
+    y = 'Patients treated'
+  ) +
+  ggtitle('EBV DNA testing by year') +
+  theme_bw() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.ticks.x = element_blank()
+  ) +
+  labs(
+    y = 'NPC patients treated'
+  )
+
+p_ebv_usage_byyear_line <- pd_ebv_usage %>%
+  mutate(year = as.character(year)) %>%
+  group_by(year, metric) %>%
+  summarise(
+    percent = mean(percent)
+  ) %>%
+  ungroup() %>%
+  ggplot(aes(
+    x = year,
+    y = percent,
+    group = metric,
+    color = metric
+  )) +
+  geom_line() +
+  geom_point() +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  labs(
+    x = 'Year of RT delivery',
+    y = 'Percent tested for EBV',
+    color = 'EBV DNA timepoint'
+  ) +
+  scale_color_brewer(palette = 'Set1')
+
+plot_grid(
+  p_ebv_usage_byyear_bar,
+  p_ebv_usage_byyear_line + theme(legend.position = 'none'),
+  ncol = 1
+) %>%
+  plot_grid(
+    get_legend(p_ebv_usage_byyear_line),
+    rel_widths = c(4,1)
+  )
+
+plot_grid(
+  p_ebv_usage_byquarter_bar,
+  p_ebv_usage_byquarter_line + theme(legend.position = 'none'),
+  ncol = 1
+) %>%
+  plot_grid(
+    get_legend(p_ebv_usage_byquarter_line),
+    rel_widths = c(4,1)
+  )
+```
+
+```{r}
+pd_ebv_usage_histology <- df_clinical %>%
+  mutate(
+    year = as.integer(gsub('(....)-..-..', '\\1', rt_start)),
+    month = as.integer(gsub('....-(..)-..', '\\1', rt_start)),
+    quarter = sprintf('%s Q%s', year, ceiling(month/3)),
+    prert_ebv = mrn %in% df_ebv_clinical_prert$mrn,
+    postrt_ebv = mrn %in% pd_postrt_testing$mrn,
+    any_ebv = mrn %in% df_ebv$mrn
+  ) %>%
+  group_by(year, npc_type) %>%
+  summarise(
+    n_prert = sum(prert_ebv),
+    n_postrt = sum(postrt_ebv),
+    n_any_ebv = sum(any_ebv),
+    n_total = n(),
+    `Percent pre-RT tested` = n_prert / n_total * 100,
+    `Percent post-RT tested` = n_postrt / n_total * 100
+  ) %>%
+  ungroup() %>%
+  gather(metric, percent, `Percent pre-RT tested`, `Percent post-RT tested`)
+
+pd_ebv_usage_histology %>%
+  mutate(
+    npc_type_simple = sprintf(gsub('.*?(WHO .*?)\\).*', '\\1', npc_type))
+  ) %>%
+  ggplot(aes(
+    x = year,
+    y = n_any_ebv
+  )) +
+  geom_bar(
+    aes(
+      y = n_total
+    ),
+    stat = 'identity',
+    fill = 'Grey80'
+  ) +
+  geom_bar(
+    aes(
+      y = n_any_ebv,
+      fill = metric
+    ),
+    stat = 'identity'
+  ) +
+  facet_grid(npc_type_simple ~ .) +
+  labs(
+    x = 'Year',
+    y = 'Cases with EBV testing',
+    fill = 'Test timing'
+  ) +
+  theme_minimal() +
+  scale_fill_brewer(palette = 'Set1', direction=-1)
+
+
+df_clinical$rt_intent %>% table
+```
+
+## Factors predicting EBV levels
+
+For this analysis, we limit the analysis to only cases where EBV was used for initial upfront treatment of the first head & neck primary cancer.
+
+```{r pre_rt_timing}
+pd_ebv_firstprimary_intervals <- df_ebv_clinical_prert %>%
+  mutate(
+    time_to_rt_start = rt_start - date_of_dx,
+    time_to_rt_end = rt_end - date_of_dx,
+    time_to_first_ebv = date_ebv - date_of_dx
+  ) %>%
+  arrange(
+    -time_to_rt_start
+  ) %>%
+  mutate(
+    mrn = factor(mrn, levels = unique(mrn))
+  )
+
+pd_ebv_firstprimary_intervals %>%
+  arrange(time_to_first_ebv) %>%
+  ggplot(aes(
+    y = mrn,
+    yend = mrn
+  )) +
+  geom_segment(aes(
+    x = time_to_rt_start,
+    xend = time_to_rt_end
+  )) +
+  geom_point(aes(
+    x = time_to_first_ebv
+  )) +
+  geom_vline(xintercept = 0) +
+  annotate(
+    geom = 'text',
+    x = 2,
+    y = 6,
+    label = 'Diagnosis',
+    hjust = 0
+  ) +
+  labs(
+    x = 'Time since diagnosis',
+    y = 'Patient'
+  )
+
+with(df_ebv_clinical_prert, sum(value > 0))
+with(df_ebv_clinical_prert, sum(value == 0))
+with(df_ebv_clinical_prert, median(value))
+with(df_ebv_clinical_prert, range(value))
+```
+
+
+### Stage
+
+**Hypothesis**: baseline cfEBVDNA is correlated with staging.
+
+```{r clinical_factors_stage, fig.width = 8, fig.height = 6}
+get_ebv_boxplot_by_group <- function(df, group_label) {
+  df %>%
+    ggplot(aes(
+      x = group,
+      y = value + 1,
+      group = group
+    )) +
+    geom_violin(color = NA, fill = 'Grey90') +
+    geom_boxplot(width = 0.2, outlier.shape=NA) +
+    geom_beeswarm(size = 0.5, cex = 1) +
+    scale_y_continuous(
+      trans = scales::pseudo_log_trans(sigma = 0.001),
+      breaks = 10^(-5:10)
+    ) +
+    labs(
+      x = group_label,
+      y = '1 + EBV DNA'
+    ) +
+    theme(
+      panel.background = element_blank(),
+      panel.grid = element_blank()
+    )
+}
+
+p_ebv_by_t <- df_ebv_clinical_prert %>%
+  dplyr::rename(
+    group = stage_t_ajcc7
+  ) %>%
+  get_ebv_boxplot_by_group(group_label = 'T category')
+
+p_ebv_by_n <- df_ebv_clinical_prert %>%
+  dplyr::rename(
+    group = stage_n_ajcc7
+  ) %>%
+  get_ebv_boxplot_by_group(group_label = 'N category')
+
+p_ebv_by_stage <- df_ebv_clinical_prert %>%
+  dplyr::rename(
+    group = stage_ajcc7
+  ) %>%
+  get_ebv_boxplot_by_group(group_label = 'Stage')
+
+p_stage_heatmap <- df_ebv_clinical_prert %>%
+  group_by(
+    stage_n_ajcc7,
+    stage_t_ajcc7
+  ) %>%
+  summarise(
+    median_ebv = median(value + 1)
+  ) %>%
+  ggplot(aes(
+    x = stage_t_ajcc7,
+    y = stage_n_ajcc7,
+    size = median_ebv
+  )) +
+  geom_point() +
+  theme(
+    panel.background = element_blank(),
+    panel.grid = element_blank()
+  ) +
+  labs(
+    x = 'T category',
+    y = 'N category',
+    size = 'Median EBV'
+  ) +
+  scale_size_area(max_size = 10)
+
+
+glm_stage_ebv <- glm(
+  log(1 + log_ebv) ~ stage_t_ajcc7_int + stage_n_ajcc7_int,
+  data = df_ebv_clinical_prert
+)
+
+p_glm_ebv_stage <- glm_stage_ebv %>%
+  forest_model()
+
+plot_grid(
+  p_ebv_by_t + ggtitle('T category'),
+  p_ebv_by_n + ggtitle('N category'),
+  p_ebv_by_stage + ggtitle('Overall stage'),
+  p_stage_heatmap + ggtitle('T & N category')
+) %>%
+  plot_grid(
+    p_glm_ebv_stage,
+    ncol = 1,
+    rel_heights = c(3,1)
+  )
+
+```
+
+### GTV
+
+GTV does not appear to be strongly correlated with baseline EBV levels.
+
+```{r clinical_factors_gtvp}
+with(
+  df_ebv_clinical_prert,
+  cor.test(
+    gtv_primary,
+    value,
+    method = 'spearman'
+  )
+)
+
+with(
+  df_ebv_clinical_prert,
+  cor.test(
+    log(1 + gtv_primary),
+    log(1 + value),
+    method = 'pearson'
+  )
+)
+
+with(
+  df_ebv_clinical_prert %>% filter(value > 0),
+  cor.test(
+    gtv_primary,
+    value,
+    method = 'spearman'
+  )
+)
+
+with(
+  df_ebv_clinical_prert %>% filter(value > 0),
+  cor.test(
+    log(1 + gtv_primary),
+    log(1 + value),
+    method = 'pearson'
+  )
+)
+
+df_ebv_clinical_prert %>%
+  ggplot(aes(
+    x = gtv_primary,
+    y = value 
+  )) +
+  scale_x_log10() +
+  scale_y_log10() +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  theme(
+    panel.grid = element_blank(),
+    panel.background = element_blank()
+  ) +
+  labs(
+    x = 'GTV primary',
+    y = 'Pre-RT EBV DNA level'
+  )
+```
+
+## Associations with RFS
+
+### Baseline EBV level
+
+```{r prognosis_baseline, fig.height = 6, fig.width = 5}
+cox_baseline_rfs_quant <- coxph(
+  Surv(time_to_recurrence, recurrence) ~ log_ebv + stage_t_ajcc7_int + stage_n_ajcc7_int,
+  data = df_ebv_clinical_prert
+)
+
+survfit_ebv_baseline_group <- survfit(
+  Surv(time_to_recurrence, recurrence) ~ ebv_baseline_group,
+  data = df_ebv_clinical_prert %>%
+    mutate(
+      ebv_baseline_group = if_else(value > median(value), 'Above median', 'Below median')
+    )
+)
+
+names(survfit_ebv_baseline_group$strata) <- gsub('ebv_baseline_group=', '', names(survfit_ebv_baseline_group$strata))
+ggsurvplot(
+  survfit_ebv_baseline_group,
+  pval = T,
+  legend.labs = c('Above median', 'Below median'),
+  risk.table = T,
+  palette = RColorBrewer::brewer.pal(n = 3, name='Set1')[1:2],
+  tables.y.text = FALSE,
+  conf.int = T,
+  conf.int.alpha = 0.15
+) +
+  labs(
+    color = 'Baseline EBV',
+    fill = 'Baseline EBV'
+  )
+
+cox_baseline_rfs_group_singlevariable <- coxph(
+  Surv(time_to_recurrence, recurrence) ~ ebv_baseline_group,
+  data = df_ebv_clinical_prert %>%
+    mutate(
+      ebv_baseline_group = if_else(value > median(value), 'Above median', 'Below median')
+    )
+)
+
+cox_baseline_rfs_group <- coxph(
+  Surv(time_to_recurrence, recurrence) ~ ebv_baseline_group + stage_t_ajcc7_int + stage_n_ajcc7_int + age + adjuvant_chemo,
+  data = df_ebv_clinical_prert %>%
+    mutate(
+      ebv_baseline_group = if_else(value > median(value), 'Above median', 'Below median')
+    )
+)
+
+exp(cbind(coef(cox_baseline_rfs_group_singlevariable), confint(cox_baseline_rfs_group_singlevariable)))
+exp(cbind(coef(cox_baseline_rfs_group), confint(cox_baseline_rfs_group)))
+forest_model(cox_baseline_rfs_group)
+```
+
+
+### First post-RT EBV level
+
+```{r prognosis_first_postrt, fig.height = 6, fig.width = 5}
+df_ebv_clinical_prertdetectable_firstpostrt %>%
+  ggplot(aes(
+    x = months_from_rt_end,
+    y = value,
+    group = mrn,
+    color = timepoint_category
+  )) +
+  geom_line(color = 'grey70', linewidth = 0.2) +
+  geom_point() +
+  scale_y_log10() +
+  facet_wrap(~clearance, ncol = 1)
+
+survfit_ebv_firstpostrt_clearance_rfs <- survfit(
+  Surv(time_to_recurrence, recurrence) ~ clearance,
+  data = df_ebv_clinical_prertdetectable_firstpostrt
+)
+ggsurvplot(
+  survfit_ebv_firstpostrt_clearance_rfs,
+  pval = T,
+  legend.labs = c('No clearance', 'Clearance'),
+  risk.table = T,
+  palette = RColorBrewer::brewer.pal(n = 3, name='Set1')[1:2],
+  tables.y.text = FALSE,
+  conf.int = T,
+  conf.int.alpha = 0.15
+)
+
+survfit_ebv_firstpostrt_clearance_pfs <- survfit(
+  Surv(time_to_progression, progression) ~ clearance,
+  data = df_ebv_clinical_prertdetectable_firstpostrt
+)
+ggsurvplot(
+  survfit_ebv_firstpostrt_clearance_pfs,
+  risk.table = T,
+  pval = T
+)
+
+survfit_ebv_firstpostrt_clearance_os <- survfit(
+  Surv(time_to_death, death) ~ clearance,
+  data = df_ebv_clinical_prertdetectable_firstpostrt
+)
+ggsurvplot(
+  survfit_ebv_firstpostrt_clearance_os,
+  risk.table = T,
+  pval = T
+)
+
+
+cox_ebv_firstpostrt_clearance_rfs <- coxph(
+  Surv(time_to_recurrence, recurrence) ~ log_ebv + stage_t_ajcc7_int + stage_n_ajcc7_int + age + adjuvant_chemo,
+  data = df_ebv_clinical_prertdetectable_firstpostrt
+)
+cox.zph(cox_ebv_firstpostrt_clearance_rfs)
+forest_model(cox_ebv_firstpostrt_clearance_rfs)
+
+cox_ebv_firstpostrt_clearance_pfs <- coxph(
+  Surv(time_to_progression, progression) ~ log_ebv + stage_t_ajcc7_int + stage_n_ajcc7_int + age + adjuvant_chemo,
+  data = df_ebv_clinical_prertdetectable_firstpostrt
+)
+cox.zph(cox_ebv_firstpostrt_clearance_pfs)
+forest_model(cox_ebv_firstpostrt_clearance_pfs)
+
+cox_ebv_firstpostrt_clearance_os <- coxph(
+  Surv(time_to_death, death) ~ log_ebv + stage_t_ajcc7_int + stage_n_ajcc7_int + age + adjuvant_chemo,
+  data = df_ebv_clinical_prertdetectable_firstpostrt
+)
+cox.zph(cox_ebv_firstpostrt_clearance_os)
+forest_model(cox_ebv_firstpostrt_clearance_os)
+
+
+df_ebv_clinical_prertdetectable_firstpostrt %>% distinct(mrn)
+
+cox_ebv_firstpostrt_clearance_rfs
+cox_ebv_firstpostrt_clearance_pfs
+cox_ebv_firstpostrt_clearance_os
+
+cbind(
+  coef(cox_ebv_firstpostrt_clearance_rfs),
+  confint(cox_ebv_firstpostrt_clearance_rfs)
+) %>% exp()
+
+cbind(
+  coef(cox_ebv_firstpostrt_clearance_pfs),
+  confint(cox_ebv_firstpostrt_clearance_pfs)
+) %>% exp()
+
+cbind(
+  coef(cox_ebv_firstpostrt_clearance_os),
+  confint(cox_ebv_firstpostrt_clearance_os)
+) %>% exp()
+
+summary(survfit_ebv_firstpostrt_clearance_rfs, times=c(36, 60))
+summary(survfit_ebv_firstpostrt_clearance_pfs, times=c(36, 60))
+summary(survfit_ebv_firstpostrt_clearance_os, times=c(36, 60))
+surv_pvalue(survfit_ebv_firstpostrt_clearance_rfs)
+surv_pvalue(survfit_ebv_firstpostrt_clearance_pfs)
+surv_pvalue(survfit_ebv_firstpostrt_clearance_os)
+
+v <- with(
+  df_ebv_clinical_prertdetectable_firstpostrt,
+  date_ebv - rt_end
+)
+median(v)
+range(v)
+
+df_ebv_clinical_prertdetectable_firstpostrt %>%
+  left_join(df_chemo_ac) %>%
+  mutate(
+    timing_rel_ac = case_when(
+      date_ebv <= date_ac_start ~ 'Before AC',
+      date_ebv >= date_ac_end ~ 'After AC',
+      TRUE ~ 'During AC'
+    )
+  ) %>%
+  count(timing_rel_ac)
+
+df_ebv_clinical_prertdetectable_firstpostrt %>%
+  mutate(
+    above_threshold = value > 31,
+    detectable = value > 0,
+    three_year_recurrence = recurrence & time_to_recurrence < 36,
+    three_year_progression = progression & time_to_progression < 36,
+    three_year_death = death & time_to_death < 36,
+  ) %>%
+  distinct(mrn, detectable, above_threshold, three_year_recurrence, three_year_progression, three_year_death) %>%
+  gather(outcome, event, -mrn, -detectable, -above_threshold) %>%
+  group_by(outcome) %>%
+  summarise(
+    TP = sum(detectable & event),
+    FP = sum(detectable & !event),
+    TN = sum(!detectable & !event),
+    FN = sum(!detectable & event),
+    sens = round(100 * TP / (TP + FN), 1),
+    spec = round(100 * TN / (TN + FP), 1),
+    PPV = round(100 * TP / (TP + FP), 1),
+    NPV = round(100 * TN / (TN + FN), 1)
+  )
+```
+
+### First post-AC EBV level
+
+```{r prognosis_first_postac, fig.height = 6, fig.width = 5}
+df_ebv_clinical_prertdetectable_firstpostac %>%
+  ggplot(aes(
+    x = months_from_rt_end,
+    y = value,
+    group = mrn,
+    color = timepoint_category
+  )) +
+  geom_line(color = 'grey70', linewidth = 0.2) +
+  geom_point() +
+  scale_y_log10() +
+  facet_wrap(~clearance, ncol = 1)
+
+survfit_ebv_firstpostac_clearance_rfs <- survfit(
+  Surv(time_to_recurrence, recurrence) ~ clearance,
+  data = df_ebv_clinical_prertdetectable_firstpostac
+)
+p_rfs <- ggsurvplot(
+  survfit_ebv_firstpostac_clearance_rfs,
+  pval = T,
+  legend.labs = c('No clearance', 'Clearance'),
+  risk.table = T,
+  palette = RColorBrewer::brewer.pal(n = 3, name='Set1')[1:2],
+  tables.y.text = FALSE,
+  conf.int = T,
+  conf.int.alpha = 0.15
+)
+
+survfit_ebv_firstpostac_clearance_pfs <- survfit(
+  Surv(time_to_progression, progression) ~ clearance,
+  data = df_ebv_clinical_prertdetectable_firstpostac
+)
+p_pfs <- ggsurvplot(
+  survfit_ebv_firstpostac_clearance_pfs,
+  risk.table = T,
+  pval = T
+)
+
+survfit_ebv_firstpostac_clearance_os <- survfit(
+  Surv(time_to_death, death) ~ clearance,
+  data = df_ebv_clinical_prertdetectable_firstpostac
+)
+p_os <- ggsurvplot(
+  survfit_ebv_firstpostac_clearance_os,
+  risk.table = T,
+  pval = T
+)
+
+
+cox_ebv_firstpostac_clearance_rfs <- coxph(
+  Surv(time_to_recurrence, recurrence) ~ log_ebv + stage_t_ajcc7_int + stage_n_ajcc7_int + age + rt_regimen,
+  data = df_ebv_clinical_prertdetectable_firstpostac
+)
+cox.zph(cox_ebv_firstpostac_clearance_rfs)
+
+cox_ebv_firstpostac_clearance_pfs <- coxph(
+  Surv(time_to_progression, progression) ~ log_ebv + stage_t_ajcc7_int + stage_n_ajcc7_int + age + rt_regimen,
+  data = df_ebv_clinical_prertdetectable_firstpostac
+)
+cox.zph(cox_ebv_firstpostac_clearance_pfs)
+
+cox_ebv_firstpostac_clearance_os <- coxph(
+  Surv(time_to_death, death) ~ log_ebv + stage_t_ajcc7_int + stage_n_ajcc7_int + age + rt_regimen,
+  data = df_ebv_clinical_prertdetectable_firstpostac
+)
+cox.zph(cox_ebv_firstpostac_clearance_os)
+
+
+df_ebv_clinical_prertdetectable_firstpostac %>% distinct(mrn)
+
+cbind(
+  coef(cox_ebv_firstpostac_clearance_rfs),
+  confint(cox_ebv_firstpostac_clearance_rfs)
+) %>% exp()
+
+cbind(
+  coef(cox_ebv_firstpostac_clearance_pfs),
+  confint(cox_ebv_firstpostac_clearance_pfs)
+) %>% exp()
+
+cbind(
+  coef(cox_ebv_firstpostac_clearance_os),
+  confint(cox_ebv_firstpostac_clearance_os)
+) %>% exp()
+
+cox_ebv_firstpostac_clearance_rfs
+cox_ebv_firstpostac_clearance_pfs
+cox_ebv_firstpostac_clearance_os
+
+summary(survfit_ebv_firstpostac_clearance_rfs, times=c(36, 60))
+summary(survfit_ebv_firstpostac_clearance_pfs, times=c(36, 60))
+summary(survfit_ebv_firstpostac_clearance_os, times=c(36, 60))
+survfit_ebv_firstpostac_clearance_rfs
+surv_pvalue(survfit_ebv_firstpostac_clearance_rfs)
+surv_pvalue(survfit_ebv_firstpostac_clearance_pfs)
+surv_pvalue(survfit_ebv_firstpostac_clearance_os)
+
+v <- with(
+  df_ebv_clinical_prertdetectable_firstpostac,
+  date_ebv - rt_end
+)
+median(v)
+range(v)
+
+df_ebv_clinical_prertdetectable_firstpostac %>%
+  mutate(
+    above_threshold = value > 31,
+    detectable = value > 0,
+    three_year_recurrence = recurrence & time_to_recurrence < 36,
+    three_year_progression = progression & time_to_progression < 36,
+    three_year_death = death & time_to_death < 36,
+  ) %>%
+  distinct(mrn, detectable, above_threshold, three_year_recurrence, three_year_progression, three_year_death) %>%
+  gather(outcome, event, -mrn, -detectable, -above_threshold) %>%
+  group_by(outcome) %>%
+  summarise(
+    TP = sum(detectable & event),
+    FP = sum(detectable & !event),
+    TN = sum(!detectable & !event),
+    FN = sum(!detectable & event),
+    sens = round(100 * TP / (TP + FN), 1),
+    spec = round(100 * TN / (TN + FP), 1),
+    PPV = round(100 * TP / (TP + FP), 1),
+    NPV = round(100 * TN / (TN + FN), 1)
+  )
+
+p_rfs
+p_pfs
+p_os
+```
+
+### Timing of follow-up EBV
+
+```{r followup_timing}
+df_ebv_postrt_clearancemodel <- df_ebv_clinical %>%
+  filter(
+    date_ebv >= rt_end
+  ) %>%
+  distinct(mrn, value, date_ebv, rt_end, stage_t_ajcc7_int, stage_n_ajcc7_int, rt_regimen) %>%
+  mutate(
+    months_since_rt = as.numeric(date_ebv - rt_end)/30,
+    concurrent_chemo = grepl('CRT', rt_regimen)
+  ) %>%
+  left_join(
+    df_chemo %>%
+      select(mrn, `AC - Cycle 1`, `AC - Cycle 2`, `AC - Cycle 3`) %>%
+      gather(ac_cycle, date_ac, -mrn) %>%
+      mutate(ac_cycle = as.integer(gsub('AC - Cycle ', '', ac_cycle)))
+  ) %>%
+  group_by(mrn, date_ebv, value, rt_end, months_since_rt, concurrent_chemo, stage_t_ajcc7_int, stage_n_ajcc7_int) %>%
+  summarise(
+    n_ac_cycles = sum(date_ac < date_ebv, na.rm=T),
+    received_ac = n_ac_cycles > 0
+  ) %>%
+  ungroup() %>%
+  mutate(detectable = value > 0) %>%
+  filter(months_since_rt < 24) %>%
+  mutate(
+    first_post_rt_detectable = mrn %in% (df_ebv_clinical_prertdetectable_firstpostrt %>% filter(value > 0) %>% .$mrn)
+  )
+  
+df_ebv_postrt_clearancemodel %>%
+  left_join(df_clinical %>% distinct(mrn, recurrence)) %>%
+  mutate(
+    first_postrt = if_else(first_post_rt_detectable, 'First post-RT detectable', 'First post-RT undetectable')
+  ) %>%
+  ggplot(aes(
+    x = months_since_rt,
+    y = value,
+    group = mrn,
+    color = recurrence
+  )) +
+  geom_line() +
+  geom_point() +
+  scale_y_log10() +
+  facet_wrap(~first_postrt) +
+  ggtitle('pEBVDNA levels') +
+  labs(
+    x = 'Months since RT',
+    y = 'pEBVDNA level'
+  )
+```
+
+Does timing of follow-up EBV matter?
+
+The following KM curve is of molecular recurrence. However, it is hard to interpret, because the data violates the assumption of uninformative censoring. In other words, we are more likely to order a new EBV DNA level in a patient we suspect has recurred.
+
+```{r molecular_recurrence_km}
+pd_time_to_detectability <- df_ebv_clinical %>%
+  filter((date_ebv - rt_end) > 60) %>%
+  mutate(
+    years_to_ebv_test = (date_ebv - rt_end)/365,
+    detectable = value > 0
+  ) %>%
+  group_by(mrn) %>%
+  summarise(
+    any_detectable = any(detectable),
+    years_to_detectability = ifelse(
+      any_detectable,
+      min(years_to_ebv_test[detectable]),
+      max(years_to_ebv_test)
+    )
+  )
+
+survfit_time_to_detectability <- survfit(
+  Surv(years_to_detectability, any_detectable) ~ 1,
+  data = pd_time_to_detectability
+)
+ggsurvplot(
+  survfit_time_to_detectability,
+  risk.table = T
+)
+
+sum(pd_time_to_detectability$any_detectable) / nrow(pd_time_to_detectability) * 100
+```
+
+We could attempt this analysis using a time-dependent survival analysis. Specifically, 
+
+```{r time_dependent_cox}
+pd_ebv_firstfollowup_timedependent <- df_ebv_clinical %>%
+  mutate(
+    months_since_rt_start = (date_ebv - rt_start)/30
+  ) %>%
+  filter(first_post_rt | (date_ebv < rt_start)) %>%
+  select(mrn, months_since_rt_start, value, log_ebv) %>%
+  arrange(mrn, months_since_rt_start) %>%
+  left_join(df_clinical %>% select(mrn, etime, recurrence_pattern)) %>%
+  group_by(mrn) %>%
+  mutate(
+    pretreatment = months_since_rt_start <= 0.5
+  ) %>%
+  filter(!pretreatment | (months_since_rt_start == max(months_since_rt_start[pretreatment]))) %>%
+  filter(n() > 1) %>%
+  mutate(
+    months_since_rt_start = if_else(
+      months_since_rt_start < 0,
+      0,
+      as.numeric(months_since_rt_start)
+    )
+  ) %>%
+  arrange(mrn, months_since_rt_start) %>%
+  mutate(
+    time = months_since_rt_start,
+    time2 = if_else(
+      row_number() == n(),
+      etime,
+      c(months_since_rt_start[2:n()], -1)
+    ),
+    recurrence = if_else(
+      row_number() == n(),
+      recurrence_pattern,
+      factor('No recurrence', levels = levels(recurrence_pattern))
+    )
+  ) %>%
+  ungroup() %>%
+  mutate(
+    clearance = (value == 0)
+  ) %>%
+  filter(time2 > time) %>%
+  left_join(
+    df_clinical %>%
+      select(mrn, ecog, smoking_py, smoking_hx, stage_t_ajcc7_int, stage_n_ajcc7_int, age)
+  )
+  
+cox_ebv_firstfollowup_quantitative <- coxph(
+  Surv(time, time2, recurrence) ~ log_ebv + stage_t_ajcc7_int + stage_n_ajcc7_int + ecog + age,
+  data = pd_ebv_firstfollowup_timedependent,
+  id = mrn
+)
+forest_model(cox_ebv_firstfollowup_quantitative)
+
+cox_ebv_firstfollowup_clearance <- coxph(
+  Surv(time, time2, recurrence) ~ clearance + stage_t_ajcc7_int + stage_n_ajcc7_int + ecog + age,
+  data = pd_ebv_firstfollowup_timedependent,
+  id = mrn
+)
+forest_model(cox_ebv_firstfollowup_clearance)
+
+cox_ebv_firstfollowup_competing <- coxph(
+  Surv(time, time2, recurrence) ~ log_ebv + (stage_t_ajcc7_int > 2.5) + (stage_n_ajcc7_int > 2.5) + age,
+  data = pd_ebv_firstfollowup_timedependent,
+  id = mrn
+)
+```
+
+## Threshold testing
+
+Test various thresholds:
+- 250 copies (per clinical lab)
+- 95% clearance from baseline
+
+### Sensitivity in patients who recurred
+
+```{r}
+pd_recurrence <- df_ebv_clinical %>%
+  mutate(
+    interval_ebv_to_recurrence = date_recurrence - date_ebv,
+    time_since_end_rt = (date_ebv - rt_end)/365,
+    timepoint_category = case_when(
+      date_ebv < rt_start ~ 'Pre-RT',
+      date_ebv > rt_end ~ 'Post-RT',
+      TRUE ~ 'During RT'
+    )
+  ) %>%
+  select(mrn, value, log_ebv, timepoint_category, recurrence, interval_ebv_to_recurrence, time_since_end_rt, time_to_recurrence) %>%
+  group_by(mrn) %>%
+  filter(
+    recurrence,
+    timepoint_category == 'Post-RT',
+    abs(interval_ebv_to_recurrence) == min(abs(interval_ebv_to_recurrence))
+  ) %>%
+  arrange(mrn, interval_ebv_to_recurrence) %>%
+  ungroup() %>%
+  filter(abs(interval_ebv_to_recurrence) < 30) %>%
+  mutate(
+    detectable = value > 0
+  )
+
+df_ebv_clinical %>%
+  distinct(mrn, recurrence) %>%
+  count(recurrence)
+
+df_ebv_clinical %>%
+  distinct(mrn, progression) %>%
+  count(progression)
+
+pd_recurrence %>%
+  count(detectable)
+```
+
+
+Examining all patients who have not recurred.
+
+```{r threshold_setting_nonrecurred}
+pd_nonrecurrence <- df_ebv_clinical %>%
+  filter(
+    !recurrence,
+    time_to_recurrence > 36,
+    date_ebv >= rt_end,
+    date_ebv <= date_recurrence
+  ) %>%
+  mutate(
+    time_since_end_rt = (date_ebv - rt_end)/365
+  ) %>%
+  group_by(mrn) %>%
+  mutate(
+    category = case_when(
+      all(value == 0) ~ 'All undetectable',
+      value[n()] == 0 ~ 'End undetectable',
+      TRUE ~ 'End detectable'
+    ),
+    any_detectable = any(value > 0)
+  ) %>%
+  ungroup()
+
+pd_nonrecurrence %>%
+  ggplot(aes(
+    x = time_since_end_rt,
+    y = value,
+    group = mrn
+  )) +
+  geom_line() +
+  geom_point() +
+  scale_y_log10() +
+  facet_wrap(~ category)
+
+pd_recurrence %>%
+  ggplot(aes(
+    x = time_since_end_rt,
+    y = value,
+    group = mrn
+  )) +
+  geom_line() +
+  geom_point() +
+  scale_y_log10()
+
+df_clinical %>%
+  ggplot(aes(
+    x = rt_start
+  )) +
+  geom_histogram()
+
+df_ebv_clinical %>%
+  ggplot(aes(
+    x = rt_start
+  )) +
+  geom_histogram()
+
+range(df_ebv_clinical$date_ebv, na.rm = T)
+range(df_ebv_clinical$rt_start, na.rm = T)
+
+df_ebv_clinical %>%
+  filter(
+    !recurrence,
+    time_to_recurrence > 36,
+  ) %>%
+  group_by(mrn) %>%
+  summarise(
+    n_postrt = sum(date_ebv >= rt_end & date_ebv <= date_recurrence, na.rm=T)
+  ) %>%
+  ungroup() %>%
+  summarise(
+    `Number with postRT cfEBVDNA` = sum(n_postrt > 0),
+    `Mean number of postRT timepoints` = mean(n_postrt),
+    `Mean number of timepoints among those with tests` = mean(n_postrt[n_postrt > 0]),
+    `Max number timepoints` = max(n_postrt[n_postrt > 0]),
+    `Min number timepoints` = min(n_postrt[n_postrt > 0])
+  ) %>%
+  glimpse()
+
+pd_nonrecurrence %>%
+  distinct(mrn, any_detectable) %>%
+  summarise(
+    n_detectable = sum(any_detectable),
+    n = n(),
+    fraction_detectable = n_detectable / n
+  )
+
+pd_nonrecurrence %>%
+  distinct(mrn, category) %>%
+  count(category)
+
+pd_nonrecurrence %>%
+  filter(value > 0) %>%
+  summarise(
+    median(value),
+    range(value)
+  )
+```
+
+### ROC threshold finding
+
+```{r threshold_setting_f1, fig.width = 10, fig.height = 4}
+pd_recurrence_testing <- pd_recurrence %>%
+  distinct(mrn, recurrence, detectable, value) %>%
+  bind_rows(
+    pd_nonrecurrence %>%
+      group_by(mrn) %>%
+      filter(date_ebv == max(date_ebv)) %>%
+      mutate(
+        detectable = value > 0
+      ) %>%
+      ungroup() %>%
+      distinct(mrn, recurrence, detectable, value)
+  )
+
+pd_recurrence_roc <- pd_recurrence_testing %>%
+  arrange(value) %>%
+  mutate(
+    TN = cumsum(!recurrence),
+    FN = cumsum(recurrence)
+  ) %>%
+  arrange(-value) %>%
+  mutate(
+    TP = cumsum(recurrence),
+    FP = cumsum(!recurrence)
+  ) %>%
+  arrange(value) %>%
+  mutate(
+    TPR = TP / (TP + FN),
+    FPR = FP / (FP + TN),
+    F1_score = TP / (TP + 0.5 * (FP + FN))
+  )
+
+
+opt_threshold <- pd_recurrence_roc %>%
+  filter(
+    F1_score == max(F1_score)
+  ) %>%
+  filter(row_number() == n()) %>%
+  .$value
+
+p_recurrence_scatter <- pd_recurrence_testing %>%
+  ggplot(aes(
+    x = value,
+    y = recurrence
+  )) +
+  geom_violin(fill = 'Grey90', color = NA) +
+  geom_beeswarm(cex = 0.5, groupOnX = F) +
+  scale_x_continuous(
+    trans = scales::pseudo_log_trans(sigma = 0.01),
+    breaks = 10^(-2:10)
+  ) +
+  theme(
+    panel.background = element_blank(),
+    panel.grid = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.x = element_blank()
+  ) +
+  labs(
+    x = 'EBV DNA level',
+    y = 'Recurrence'
+  ) +
+  geom_vline(xintercept = opt_threshold) +
+  geom_vline(xintercept = 250)
+
+
+p_recurrence_f1 <- pd_recurrence_roc %>%
+  ggplot(aes(
+    x = value,
+    y = F1_score
+  )) +
+  geom_path() +
+  scale_x_continuous(
+    trans = scales::pseudo_log_trans(sigma = 0.01),
+    breaks = 10^(-2:10)
+  ) +
+  theme(
+    panel.background = element_blank(),
+    panel.grid = element_blank()
+  ) +
+  labs(
+    x = 'EBV DNA level',
+    y = 'F1 accuracy'
+  ) +
+  geom_vline(xintercept = opt_threshold) +
+  geom_vline(xintercept = 250)
+
+v_auroc <- pd_recurrence_roc %>%
+  mutate(
+    area = (FPR - c(FPR[2:n()], 0)) * TPR
+  ) %>%
+  summarise(
+    AUROC = sum(area)
+  )
+
+p_roc <- pd_recurrence_roc %>%
+  ggplot(aes(
+    x = FPR,
+    y = TPR
+  )) +
+  geom_path() +
+  geom_point(
+    data = pd_recurrence_roc %>% filter(value == opt_threshold),
+    color = 'red',
+    size = 5
+  ) +
+  theme_bw() +
+  geom_text(aes(
+    label = sprintf('%s copies', round(opt_threshold))
+    ),
+    data = pd_recurrence_roc %>% filter(value == opt_threshold),
+    hjust = 0,
+    nudge_x = 0.05,
+    nudge_y = -0.02
+  ) +
+  geom_point(
+    data = pd_recurrence_roc %>% filter(abs(value - 250) == min(abs(value - 250))),
+    color = 'red',
+    size = 5
+  ) +
+  geom_text(aes(
+    label = '250 copies'
+    ),
+    data = pd_recurrence_roc %>% filter(abs(value - 250) == min(abs(value - 250))),
+    hjust = 0,
+    nudge_x = 0.05,
+    nudge_y = -0.02
+  ) +
+  annotate(
+    geom = 'text',
+    x = 0.5,
+    y = 0.5,
+    hjust = 0.5,
+    size = 6,
+    label = sprintf('AUROC = %s', round(v_auroc, 3))
+  )
+
+plot_grid(
+  p_recurrence_scatter,
+  p_recurrence_f1,
+  ncol = 1,
+  align = 'v'
+) %>%
+  plot_grid(
+    p_roc,
+    nrow = 1,
+    rel_widths = c(3,2)
+  )
+
+```
+
+```{r}
+pd_recurrence_roc %>%
+  filter(value > 250) %>%
+  summarise()
+
+df_ebv_clinical_prert %>%
+  ggplot(aes(
+    x = value
+  )) +
+  geom_histogram() +
+  scale_x_continuous(
+    trans = scales::pseudo_log_trans(sigma = 0.01),
+    breaks = c(0, 10^(-1:10))
+  ) +
+  theme(
+    panel.background = element_blank(),
+    panel.grid = element_blank()
+  ) +
+  ggtitle('Pre-RT EBV DNA levels')
+```
+
