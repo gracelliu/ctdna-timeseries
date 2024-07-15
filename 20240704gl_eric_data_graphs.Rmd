@@ -774,7 +774,7 @@ df_hpv_conc <- df_hpv_conc %>%
   filter(!is.na(baseline_seq_copies))
 
 ggplot(df_hpv_conc, aes(x = timepoint, y = percentchange_seq_copies, group = patient)) +
-  geom_line() +
+  geom_line(size=0.2) +
   geom_point() +
   labs(title = "Percent Change in HPV Sequence Copies Over Time",
        x = "Timepoint",
@@ -843,74 +843,3 @@ ggplot() +
 ```
 
 
-```{r}
-
-
-```
-
-```{r}
-
-
-```
-
-
-```{r}
-
-
-```
-
-
-```{r}
-
-
-```
-
-
-
-
-```{r}
-
-
-```
-
-
-
-
-
-
-```{r}
-
-
-```
-
-
-
-
-
-
-```{r}
-
-
-```
-
-
-
-```{r}
-
-
-```
-
-
-
-```{r}
-
-
-```
-
-
-
-
-```{r}
-
-
-```
