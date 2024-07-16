@@ -68,8 +68,9 @@ library(nonnestcox)
 library(png)
 library(grid)
 library(ggridges)
-source('/Users/graceliu/bratman/src/hpv_dna_functions.R')
-source('/Users/graceliu/bratman/src/summary_functions.R')
+
+source("/Users/graceliu/bratman/timeseries/src/eric_analysis/hpv_dna_functions.R")
+source('/Users/graceliu/bratman/timeseries/src/eric_analysis/summary_functions.R')
 
 ####################
 # Set some options #
@@ -87,7 +88,7 @@ set.seed(142)
 
 tables <- list()
 
-load('/Users/graceliu/bratman/HPV_analysis_dataframes.Rdata')
+load('/Users/graceliu/bratman/timeseries/data/HPV_analysis_dataframes.Rdata')
 # df_clinical_ctdna$surv_progression = as.character(df_clinical_ctdna$surv_progression)
 # df_clinical_ctdna$surv_recurrence = as.character(df_clinical_ctdna$surv_recurrence)
 # df_clinical_ctdna$surv_overall = as.character(df_clinical_ctdna$surv_overall)
