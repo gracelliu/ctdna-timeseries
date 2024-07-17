@@ -75,18 +75,28 @@ ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN3294"), aes(x = EQD2,
   geom_line() +
   labs(title = "log_seq_copies_mL vs EQD2 for Patient HN3294",
        x = "EQD2",
-       y = "log_seq_copies_mL")
+       y = "log_seq_copies_mL ")
 
 # Volume of primary
-
+ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN3294"), aes(x = EQD2, y = gtv_primary)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "gtv_primary vs EQD2 for Patient HN3294",
+       x = "EQD2",
+       y = "gtv_primary")
 
 # Volume of nodes
-
+ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN3294"), aes(x = EQD2, y = sum_gtv_nodes)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "Volumes vs EQD2 for Patient HN3294",
+       x = "EQD2",
+       y = "sum_gtv_nodes")
 
 # Volume of air 
 
 
-# Overlayed as one graph 
+# Overlaid as one graph 
 
 
 
@@ -94,7 +104,18 @@ ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN3294"), aes(x = EQD2,
 
 
 
+```{r}
 
+ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN3294")) +
+  geom_point(aes(x = EQD2, y = gtv_primary), color = "blue") +
+  geom_line(aes(x = EQD2, y = gtv_primary), color = "blue") +
+  geom_point(aes(x = EQD2, y = sum_gtv_nodes), color = "lightblue") +
+  geom_line(aes(x = EQD2, y = sum_gtv_nodes), color = "lightblue") +
+  labs(title = "gtv_primary and sum_gtv_nodes vs EQD2 for Patient HN3294",
+       x = "EQD2",
+       y = "Volume")
+
+```
 
 
 
