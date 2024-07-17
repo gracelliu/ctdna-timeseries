@@ -10,7 +10,7 @@ knitr::opts_chunk$set(echo = FALSE)
 ```
 
 
-```{r load, echo=FALSE}
+```{r load, include=FALSE}
 
 library(data.table)
 library(dplyr)
@@ -53,7 +53,7 @@ df_patient_timeseries_eqd2 <- merge(
   df_ctdna_eqd2_radiomic_clinical %>% select(patient, timepoint, EQD2, gtv_primary, sum_gtv_nodes),
   df_hpvseq %>% select(patient, timepoint, seq_copies_mL),
   by = c("patient", "timepoint")) %>%
-  filter(timepoint != "3 months") %>%
+  # filter(timepoint != "3 months") %>%
   mutate(log_seq_copies_mL = log1p(seq_copies_mL))
 
 ```
