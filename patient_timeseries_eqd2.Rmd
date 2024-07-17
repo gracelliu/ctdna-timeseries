@@ -61,6 +61,7 @@ df_patient_timeseries_eqd2 <- merge(
 
 ```{r HN3294, echo=FALSE}
 
+# HPV ctDNA concentration 
 ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN3294"), aes(x = EQD2, y = seq_copies_mL)) +
   geom_point() +
   geom_line() +
@@ -68,12 +69,26 @@ ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN3294"), aes(x = EQD2,
        x = "EQD2",
        y = "seq_copies_mL")
 
+# HPV ctDNA concentration LOG 
 ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN3294"), aes(x = EQD2, y = log_seq_copies_mL)) +
   geom_point() +
   geom_line() +
   labs(title = "log_seq_copies_mL vs EQD2 for Patient HN3294",
        x = "EQD2",
        y = "log_seq_copies_mL")
+
+# Volume of primary
+
+
+# Volume of nodes
+
+
+# Volume of air 
+
+
+# Overlayed as one graph 
+
+
 
 ```
 
