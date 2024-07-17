@@ -37,6 +37,7 @@ library(prettydoc)
 library(hrbrthemes)
 library(tint)
 library(tufte)
+library(cowplot)
 
 ggthemr("fresh")
 
@@ -56,64 +57,77 @@ df_patient_timeseries_eqd2 <- merge(
   # filter(timepoint != "3 months") %>%
   mutate(log_seq_copies_mL = log1p(seq_copies_mL))
 
+df_airvolume = merge(df_cbctfate_smooth, df_clinical_opc, by="Mrn")
+
 ```
 
 
-```{r HN3294, echo=FALSE}
+```{r HN2976, echo=FALSE}
 
 # HPV ctDNA concentration 
-ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN3294"), aes(x = EQD2, y = seq_copies_mL)) +
+ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN2976"), aes(x = EQD2, y = seq_copies_mL)) +
   geom_point() +
   geom_line() +
-  labs(title = "seq_copies_mL vs EQD2 for Patient HN3294",
+  labs(title = "seq_copies_mL vs EQD2 for Patient HN2976",
        x = "EQD2",
        y = "seq_copies_mL")
 
 # HPV ctDNA concentration LOG 
-ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN3294"), aes(x = EQD2, y = log_seq_copies_mL)) +
+ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN2976"), aes(x = EQD2, y = log_seq_copies_mL)) +
   geom_point() +
   geom_line() +
-  labs(title = "log_seq_copies_mL vs EQD2 for Patient HN3294",
+  labs(title = "log_seq_copies_mL vs EQD2 for Patient HN2976",
        x = "EQD2",
        y = "log_seq_copies_mL ")
 
 # Volume of primary
-ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN3294"), aes(x = EQD2, y = gtv_primary)) +
-  geom_point() +
+p1 <- ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN2976"), aes(x = EQD2, y = gtv_primary)) +
   geom_line() +
-  labs(title = "gtv_primary vs EQD2 for Patient HN3294",
+  labs(title = "gtv_primary vs EQD2 for Patient HN2976",
        x = "EQD2",
        y = "gtv_primary")
 
 # Volume of nodes
-ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN3294"), aes(x = EQD2, y = sum_gtv_nodes)) +
-  geom_point() +
+p2 <- ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN2976"), aes(x = EQD2, y = sum_gtv_nodes)) +
   geom_line() +
-  labs(title = "Volumes vs EQD2 for Patient HN3294",
+  labs(title = "Volumes vs EQD2 for Patient HN2976",
        x = "EQD2",
        y = "sum_gtv_nodes")
 
 # Volume of air 
+ggplot(df_airvolume %>% filter(patient == "HN2976"), aes(x = fraction, y = smoothed_normalized)) + 
+  geom_line() + 
+  labs(title = "Volumes vs EQD2 for Patient HN2976",
+       x = "EQD2",
+       y = "sum_gtv_nodes")
 
-
-# Overlaid as one graph 
-
-
+# Overlaid as one graph (using cowplot)
+ggdraw() +
+  draw_plot(p1) +
+  draw_plot(p2) +
+  draw_plot(p3)
 
 ```
 
 
+WE DONT WANT THIS 
 
 ```{r}
 
-ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN3294")) +
+# Create the base plot with primary volume
+p <- ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN3294")) +
   geom_point(aes(x = EQD2, y = gtv_primary), color = "blue") +
   geom_line(aes(x = EQD2, y = gtv_primary), color = "blue") +
   geom_point(aes(x = EQD2, y = sum_gtv_nodes), color = "lightblue") +
   geom_line(aes(x = EQD2, y = sum_gtv_nodes), color = "lightblue") +
-  labs(title = "gtv_primary and sum_gtv_nodes vs EQD2 for Patient HN3294",
-       x = "EQD2",
-       y = "Volume")
+  labs(title = "gtv_primary and sum_gtv_nodes vs EQD2 for Patient HN3294") +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_blank())
+
+# Print the plot
+print(p)
+
 
 ```
 
