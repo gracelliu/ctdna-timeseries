@@ -57,8 +57,6 @@ df_patient_timeseries_eqd2 <- merge(
   # filter(timepoint != "3 months") %>%
   mutate(log_seq_copies_mL = log1p(seq_copies_mL))
 
-df_airvolume = merge(df_cbctfate_smooth, df_clinical_opc, by="Mrn")
-
 ```
 
 
@@ -163,19 +161,16 @@ df_ctdna_collectiondates %>% rename(Baseline = date_ctdna_baseline) %>% gather(t
 
 # Find common patients
 common_patients <- intersect(df_hpvseq$patient, df_ctdna_collectiondates$patient)
-
 # Count common patients
 common_count <- length(common_patients)
 
 # Find patients only in df_hpvseq
 only_in_hpvseq <- setdiff(df_hpvseq$patient, df_ctdna_collectiondates$patient)
-
 # Count patients only in df_hpvseq
 only_in_hpvseq_count <- length(only_in_hpvseq)
 
 # Find patients only in df_ctdna_collectiondates
 only_in_ctdna_collection_dates <- setdiff(df_ctdna_collectiondates$patient, df_hpvseq$patient)
-
 # Count patients only in df_ctdna_collectiondates
 only_in_ctdna_collection_dates_count <- length(only_in_ctdna_collection_dates)
 
@@ -189,6 +184,27 @@ only_in_ctdna_collection_dates_count
 
 
 
+```{r}
+
+# Find patients only in df_hpvseq
+only_in_hpvseq <- setdiff(df_hpvseq$patient, df_cbctvolume$patient)
+
+# Count patients only in df_hpvseq
+only_in_hpvseq_count <- length(only_in_hpvseq)
+
+# Find patients only in df_cbctvolume
+only_in_cbctvolume <- setdiff(df_cbctvolume$patient, df_hpvseq$patient)
+
+# Count patients only in df_cbctvolume
+only_in_cbctvolume_count <- length(only_in_cbctvolume)
+
+# Display the results
+common_count
+only_in_hpvseq_count
+only_in_cbctvolume_count
+
+
+```
 
 
 
