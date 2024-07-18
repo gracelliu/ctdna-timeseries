@@ -159,7 +159,32 @@ df_ctdna_collectiondates %>% rename(Baseline = date_ctdna_baseline) %>% gather(t
 
 
 
+```{r}
 
+# Find common patients
+common_patients <- intersect(df_hpvseq$patient, df_ctdna_collectiondates$patient)
+
+# Count common patients
+common_count <- length(common_patients)
+
+# Find patients only in df_hpvseq
+only_in_hpvseq <- setdiff(df_hpvseq$patient, df_ctdna_collectiondates$patient)
+
+# Count patients only in df_hpvseq
+only_in_hpvseq_count <- length(only_in_hpvseq)
+
+# Find patients only in df_ctdna_collectiondates
+only_in_ctdna_collection_dates <- setdiff(df_ctdna_collectiondates$patient, df_hpvseq$patient)
+
+# Count patients only in df_ctdna_collectiondates
+only_in_ctdna_collection_dates_count <- length(only_in_ctdna_collection_dates)
+
+# Display results
+common_count
+only_in_hpvseq_count
+only_in_ctdna_collection_dates_count
+
+```
 
 
 
