@@ -111,14 +111,13 @@ ggdraw() +
 ```{r}
 df_cbctfate %>%
   ggplot(aes(x = fraction, y = percent_vol, group = Mrn)) +
-  geom_line() +
+  geom_line(size=0.1) +
   facet_wrap(~Roi)
 
 df_cbctfate %>%
   filter(Roi == 'x_GTVp_Tracking') %>%
   ggplot(aes(x = fraction, y = percent_vol, group = Mrn)) +
   geom_line() 
-
 
 
 df_cbctfate %>%
@@ -138,20 +137,13 @@ df_ctdna_collectiondates %>%
 
 
 
-
 ```{r}
 
-df_ctdna_collectiondates %>% rename(baseline = date_ctdna_baseline,
+df_ctdna_collectiondates_long <- df_ctdna_collectiondates %>% rename(baseline = date_ctdna_baseline,
                                     early = date_ctdna_early, 
                                     mid = date_ctdna_mid,
                                     followup = date_ctdna_followup) %>%
   gather(timepoint, date_ctdna, -patient)
-
-
-left_join(df_cbctfate, by = c('date_ctdna' = 'ExamDate'))
-
-
-df_ctdna_collectiondates %>% rename(Baseline = date_ctdna_baseline) %>% gather(timepoint, date_ctdna, -patient) %>% left_join(df_cbctfate %>% mutate(ExamDate = as.date(ExamDate)), by = c('date_ctdna' = 'ExamDate'))
 
 ```
 
@@ -183,8 +175,9 @@ only_in_ctdna_collection_dates_count
 
 
 
-
 ```{r}
+
+df_cbctvolume = inner_join(df_cbctfate, df_clinical_opc, by="Mrn")
 
 # Find patients only in df_hpvseq
 only_in_hpvseq <- setdiff(df_hpvseq$patient, df_cbctvolume$patient)
@@ -203,11 +196,17 @@ common_count
 only_in_hpvseq_count
 only_in_cbctvolume_count
 
-
 ```
 
 
+```{r}
 
+# df_patient_timeseries_fraction <- inner_join(df_hpvseq, df_cbctvolume, by = "patient")
+unique(df_cbctvolume$cohort)
+unique(df_cbctvolume$Roi)
+unique(df_cbctvolume$series_index)
+
+```
 
 
 
