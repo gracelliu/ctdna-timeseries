@@ -95,7 +95,7 @@ p2 <- ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN2976"), aes(x =
        y = "sum_gtv_nodes")
 
 # Volume of air 
-ggplot(df_airvolume %>% filter(patient == "HN2976"), aes(x = fraction, y = smoothed_normalized)) + 
+p3 <- ggplot(df_airvolume %>% filter(patient == "HN2976" & Roi =="x_Air_GTVp_Expanded05"), aes(x = fraction, y = smoothed_normalized)) + 
   geom_line() + 
   labs(title = "Volumes vs EQD2 for Patient HN2976",
        x = "EQD2",
@@ -110,29 +110,53 @@ ggdraw() +
 ```
 
 
-WE DONT WANT THIS 
-
 ```{r}
+df_cbctfate %>%
+  ggplot(aes(x = fraction, y = percent_vol, group = Mrn)) +
+  geom_line() +
+  facet_wrap(~Roi)
 
-# Create the base plot with primary volume
-p <- ggplot(df_patient_timeseries_eqd2 %>% filter(patient == "HN3294")) +
-  geom_point(aes(x = EQD2, y = gtv_primary), color = "blue") +
-  geom_line(aes(x = EQD2, y = gtv_primary), color = "blue") +
-  geom_point(aes(x = EQD2, y = sum_gtv_nodes), color = "lightblue") +
-  geom_line(aes(x = EQD2, y = sum_gtv_nodes), color = "lightblue") +
-  labs(title = "gtv_primary and sum_gtv_nodes vs EQD2 for Patient HN3294") +
-  theme(axis.text = element_blank(),
-        axis.ticks = element_blank(),
-        axis.title = element_blank())
-
-# Print the plot
-print(p)
+df_cbctfate %>%
+  filter(Roi == 'x_GTVp_Tracking') %>%
+  ggplot(aes(x = fraction, y = percent_vol, group = Mrn)) +
+  geom_line() 
 
 
+
+df_cbctfate %>%
+  filter(Roi == 'x_GTVp_Tracking', cohort == 'OPC') %>%
+  group_by(Mrn) %>%
+  filter(fraction == max(fraction)) %>%
+  ungroup() %>%
+  arrange(percent_vol) %>%
+  mutate(group = if_else(percent_vol < median(percent_vol), 'Below median', 'Above median'))
+
+
+df_ctdna_collectiondates %>% 
+  rename(Baseline = date_ctdna_baseline) %>% 
+  gather(timepoint, date_ctdna, -patient) %>% 
+  left_join(df_cbctfate, by = c('date_ctdna' = 'ExamDate'))
 ```
 
 
 
+
+```{r}
+
+df_ctdna_collectiondatess
+df_ctdna_collectiondates %>% gather(timepoint, date, -patient)
+df_ctdna_collectiondates %>% gather(timepoint, date_ctdnq, -patient)
+df_ctdna_collectiondates %>% gather(timepoint, date_ctdna, -patient)
+
+df_ctdna_collectiondates %>% rename(Baseline = date_ctdna_baseline) %>% gather(timepoint, date_ctdna, -patient)
+
+df_ctdna_collectiondates %>% rename(Baseline = date_ctdna_baseline) %>% gather(timepoint, date_ctdna, -patient) %>% left_join(df_cbctfate, by = c('date_ctdna' = 'ExamDate'))
+
+
+df_ctdna_collectiondates %>% rename(Baseline = date_ctdna_baseline) %>% gather(timepoint, date_ctdna, -patient) %>% left_join(df_cbctfate %>% mutate(ExamDate = as.date(ExamDate)), by = c('date_ctdna' = 'ExamDate'))
+
+
+```
 
 
 
