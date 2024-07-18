@@ -143,18 +143,17 @@ df_ctdna_collectiondates %>%
 
 ```{r}
 
-df_ctdna_collectiondatess
-df_ctdna_collectiondates %>% gather(timepoint, date, -patient)
-df_ctdna_collectiondates %>% gather(timepoint, date_ctdnq, -patient)
-df_ctdna_collectiondates %>% gather(timepoint, date_ctdna, -patient)
+df_ctdna_collectiondates %>% rename(baseline = date_ctdna_baseline,
+                                    early = date_ctdna_early, 
+                                    mid = date_ctdna_mid,
+                                    followup = date_ctdna_followup) %>%
+  gather(timepoint, date_ctdna, -patient)
 
-df_ctdna_collectiondates %>% rename(Baseline = date_ctdna_baseline) %>% gather(timepoint, date_ctdna, -patient)
 
-df_ctdna_collectiondates %>% rename(Baseline = date_ctdna_baseline) %>% gather(timepoint, date_ctdna, -patient) %>% left_join(df_cbctfate, by = c('date_ctdna' = 'ExamDate'))
+left_join(df_cbctfate, by = c('date_ctdna' = 'ExamDate'))
 
 
 df_ctdna_collectiondates %>% rename(Baseline = date_ctdna_baseline) %>% gather(timepoint, date_ctdna, -patient) %>% left_join(df_cbctfate %>% mutate(ExamDate = as.date(ExamDate)), by = c('date_ctdna' = 'ExamDate'))
-
 
 ```
 
