@@ -209,5 +209,34 @@ unique(df_cbctvolume$series_index)
 ```
 
 
+```{r}
+
+df_cbctfate %>%
+  ggplot(aes(x = fraction, y = percent_vol, group = Mrn)) +
+  geom_line(size=0.1) +
+  facet_wrap(~Roi)
+
+df_cbctvolume %>%
+  filter(Roi == 'x_GTVp_Tracking') %>%
+  ggplot(aes(x = fraction, y = percent_vol, group = Mrn)) +
+  geom_line(size=0.1) 
+
+df_cbctfate %>%
+  filter(Roi == 'x_GTVp_') %>%
+  ggplot(aes(x = fraction, y = percent_vol, group = Mrn)) +
+  geom_line(size=0.1) 
+
+```
+
+
+
+
+
+
+
+
+
+
+
 
 
