@@ -57,6 +57,8 @@ df_patient_timeseries_eqd2 <- merge(
   # filter(timepoint != "3 months") %>%
   mutate(log_seq_copies_mL = log1p(seq_copies_mL))
 
+df_airvolume = merge(df_cbctfate_smooth, df_clinical_opc, by="Mrn")
+
 ```
 
 
