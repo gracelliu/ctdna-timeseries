@@ -153,7 +153,7 @@ df_ctdna_collectiondates_long <- df_ctdna_collectiondates %>% rename(baseline = 
 
 ```{r}
 
-# Find common patients
+# Find common patients between df_hpvseq and df_ctdna_collectiondates
 common_patients <- intersect(df_hpvseq$patient, df_ctdna_collectiondates$patient)
 # Count common patients
 common_count <- length(common_patients)
@@ -176,20 +176,25 @@ only_in_ctdna_collection_dates_count
 ```
 
 
-
 ```{r}
 
 df_cbctvolume = inner_join(df_cbctfate, df_clinical_opc, by="Mrn")
+unique(df_cbctvolume$cohort)
+unique(df_cbctvolume$Roi)
+unique(df_cbctvolume$series_index)
+
+
+```
+
+```{r}
 
 # Find patients only in df_hpvseq
 only_in_hpvseq <- setdiff(df_hpvseq$patient, df_cbctvolume$patient)
-
 # Count patients only in df_hpvseq
 only_in_hpvseq_count <- length(only_in_hpvseq)
 
 # Find patients only in df_cbctvolume
 only_in_cbctvolume <- setdiff(df_cbctvolume$patient, df_hpvseq$patient)
-
 # Count patients only in df_cbctvolume
 only_in_cbctvolume_count <- length(only_in_cbctvolume)
 
@@ -201,14 +206,6 @@ only_in_cbctvolume_count
 ```
 
 
-```{r}
-
-# df_patient_timeseries_fraction <- inner_join(df_hpvseq, df_cbctvolume, by = "patient")
-unique(df_cbctvolume$cohort)
-unique(df_cbctvolume$Roi)
-unique(df_cbctvolume$series_index)
-
-```
 
 
 ```{r}
@@ -219,9 +216,24 @@ df_cbctfate %>%
   facet_wrap(~Roi)
 
 df_cbctvolume %>%
+  ggplot(aes(x = fraction, y = percent_vol, group = patient)) +
+  geom_line(size=0.1) +
+  facet_wrap(~Roi)
+
+```
+
+
+```{r}
+
+# All patients air volume and tumor volume 
+
+df_cbctvolume %>%
   filter(Roi == 'x_GTVp_Tracking') %>%
-  ggplot(aes(x = fraction, y = percent_vol, group = Mrn)) +
-  geom_line(size=0.1) 
+  ggplot(aes(x = fraction, y = percent_vol, group = patient)) +
+  geom_line(size=0.2) +
+  labs(title = "Volume of Primary Tumor over the course of treatment for all patients",
+       x = "fraction",
+       y = "Volume of Primary Tumor")
 
 df_cbctfate %>%
   filter(Roi == 'x_GTVp_') %>%
