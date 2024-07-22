@@ -301,6 +301,13 @@ df_cbctvolume %>%
 ```
 
 
+```{r}
+
+df_hpvseq <- df_hpvseq %>% mutate(timepoint = recode(timepoint,
+                            "Baseline" = "baseline",
+                            "Early RT" = "early",
+                            "Mid RT" = "mid",
+                            "3 months" = "followup"))
 
 
 
