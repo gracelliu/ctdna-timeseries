@@ -235,10 +235,16 @@ df_cbctvolume %>%
        x = "fraction",
        y = "Volume of Primary Tumor")
 
-df_cbctfate %>%
-  filter(Roi == 'x_GTVp_') %>%
-  ggplot(aes(x = fraction, y = percent_vol, group = Mrn)) +
-  geom_line(size=0.1) 
+df_cbctvolume %>%
+  filter(Roi == 'x_Air_GTVp_Expanded05') %>%
+  ggplot(aes(x = fraction, y = percent_vol, group = patient)) +
+  geom_line(size=0.2) +
+  labs(title = "Air Volume in Primary Tumor over course of treatment for all patients",
+       x = "fraction",
+       y = "Air Volume in Primary Tumor")
+
+```
+
 
 ```
 
