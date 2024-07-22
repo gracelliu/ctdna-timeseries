@@ -340,3 +340,24 @@ glimpse(df_cbct_dates)
 
 ```
 
+
+```{r}
+
+# Function to find the closest fraction date for each patient and timepoint
+find_closest_fraction <- function(patient, hpv_date) {
+  patient_cbct_dates <- df_cbct_dates %>% filter(patient == !!patient)
+  if (nrow(patient_cbct_dates) == 0) return(NA)
+  patient_cbct_dates <- patient_cbct_dates %>% mutate(date_diff = abs(difftime(date, hpv_date, units = "days")))
+  closest_fraction <- patient_cbct_dates %>% filter(date_diff == min(date_diff)) %>% select(fraction) %>% slice(1)
+  return(closest_fraction$fraction)
+}
+
+# Apply the function to each row in df_hpvseq_dates
+df_hpvseq_dates <- df_hpvseq_dates %>%
+  rowwise() %>%
+  mutate(fraction = find_closest_fraction(patient, date))
+
+# Display the updated dataframe
+print(df_hpvseq_dates)
+
+```
