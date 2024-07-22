@@ -309,13 +309,34 @@ df_hpvseq <- df_hpvseq %>% mutate(timepoint = recode(timepoint,
                             "Mid RT" = "mid",
                             "3 months" = "followup"))
 
+ df_hpvseq_dates <- inner_join(df_hpvseq, df_ctdna_collectiondates_long, by = c("patient", "timepoint"))
+
+```
+
+
+```{r}
+
+ggplot(df_ctdna, aes(x = timepoint, y = ctdna, group = patient)) +
+  geom_point() +
+  geom_line()
+
+```
 
 
 
+```{r}
 
+glimpse(df_cbctvolume)
+glimpse(df_hpvseq_dates)
 
+df_cbctvolume <- df_cbctvolume %>%
+  mutate(date = as.Date(ExamDate))
 
+df_hpvseq_dates <- df_hpvseq_dates %>% rename(date = date_ctdna)
+df_cbct_dates <- df_cbctvolume %>% filter(Roi == "x_GTVp_Tracking")
 
+glimpse(df_hpvseq_dates)
+glimpse(df_cbct_dates)
 
-
+```
 
