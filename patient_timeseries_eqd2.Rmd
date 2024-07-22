@@ -246,6 +246,20 @@ df_cbctvolume %>%
 ```
 
 
+```{r}
+
+df_cbctfate
+df_clinical_opc
+
+# Find common patients
+common_patients <- intersect(df_airvolume$patient, df_clinical_opc$patient)
+# Count common patients
+common_count <- length(common_patients)
+common_count
+
+
+```
+
 ```
 
 
