@@ -260,6 +260,13 @@ common_count
 
 ```
 
+```{r}
+
+# df_cbctvolume <- inner_join(df_airvolume, df_clinical_opc %>% select(patient, rt_fractions), by="patient")
+df_cbctvolume <- df_cbctvolume %>% filter(rt_fractions == 35)
+
+```
+
 ```
 
 
