@@ -327,6 +327,12 @@ unique_hpvseq_count
 unique_cbct_count
 ```
 
+
+```{r}
+# Filter df_hpvseq_dates to only include patients that exist in df_cbct_dates
+df_hpvseq_dates <- df_hpvseq_dates %>%
+  semi_join(df_cbct_dates, by = "patient")
+
 # Function to find the closest fraction date for each patient and timepoint
 find_closest_fraction <- function(patient, hpv_date) {
   patient_cbct_dates <- df_cbct_dates %>% filter(patient == !!patient)
