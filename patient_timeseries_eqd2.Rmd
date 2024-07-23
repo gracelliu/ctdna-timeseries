@@ -303,6 +303,15 @@ df_hpvseq <- df_hpvseq %>% mutate(timepoint = recode(timepoint,
 df_hpvseq_dates <- inner_join(df_hpvseq, df_ctdna_collectiondates_long, by = c("patient", "timepoint")) %>% rename(date = date_ctdna)
 df_cbct_dates <- df_cbctvolume %>% mutate(date = as.Date(ExamDate)) %>% filter(Roi == "x_GTVp_Tracking")
 
+```
+
+
+```{r}
+# Find common patients
+common_patients <- intersect(df_hpvseq_dates$patient, df_cbct_dates$patient)
+# Count common patients
+common_count <- length(common_patients)
+common_count
 
 # Function to find the closest fraction date for each patient and timepoint
 find_closest_fraction <- function(patient, hpv_date) {
@@ -324,7 +333,6 @@ df_hpvseq_dates <- df_hpvseq_dates %>%
 
 # Display the updated dataframe
 print(df_hpvseq_dates)
-
 ```
 
 ```{r}
