@@ -311,7 +311,6 @@ df_cbct_dates <- df_cbctvolume %>% mutate(date = as.Date(ExamDate)) %>% filter(R
 common_patients <- intersect(df_hpvseq_dates$patient, df_cbct_dates$patient)
 # Count common patients
 common_count <- length(common_patients)
-common_count
 
 # Find unique patients in each data frame
 unique_hpvseq_patients <- setdiff(df_hpvseq_dates$patient, df_cbct_dates$patient)
@@ -366,12 +365,20 @@ ggplot(df_hpvseq_dates, aes(x = fraction, y = seq_copies_mL, group = patient)) +
     labels = scales::trans_format("log10", scales::math_format(10^.x))
   ) +
   scale_x_continuous(
-    breaks = scales::pretty_breaks(n = 15)
+    breaks = scales::pretty_breaks(n = 10)
   ) +
   labs(
     title = "HPV ctDNA Concentration over the course of treatment for all patients",
     x = "Fraction",
     y = "HPV ctDNA Concentration (log scale)"
+  ) + 
+  theme_minimal() +
+  theme(
+  panel.background = element_blank(),  # Remove panel background
+  plot.background = element_blank(),   # Remove plot background
+  legend.background = element_blank(), # Remove legend background
+  panel.grid.major = element_line(color = "grey95"), # Major grid lines
+  panel.grid.minor = element_line(color = "grey96")  # Minor grid lines
   )
 
 ```
