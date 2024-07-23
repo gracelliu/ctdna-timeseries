@@ -377,14 +377,14 @@ ggplot(df_hpvseq_dates, aes(x = fraction, y = seq_copies_mL, group = patient)) +
     title = "HPV ctDNA Concentration over the course of treatment for all patients",
     x = "Fraction",
     y = "HPV ctDNA Concentration (log scale)"
-  ) + 
-  theme_minimal() +
-  theme(
-  panel.background = element_blank(),  # Remove panel background
-  plot.background = element_blank(),   # Remove plot background
-  legend.background = element_blank(), # Remove legend background
-  panel.grid.major = element_line(color = "grey95"), # Major grid lines
-  panel.grid.minor = element_line(color = "grey96")  # Minor grid lines
-  )
+  ) 
+  # theme_minimal() +
+  # theme(
+  # panel.background = element_blank(),  # Remove panel background
+  # plot.background = element_blank(),   # Remove plot background
+  # legend.background = element_blank(), # Remove legend background
+  # panel.grid.major = element_line(color = "grey95"), # Major grid lines
+  # panel.grid.minor = element_line(color = "grey96")  # Minor grid lines
+  # )
 
 ```
