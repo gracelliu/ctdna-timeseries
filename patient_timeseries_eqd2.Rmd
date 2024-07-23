@@ -262,14 +262,7 @@ common_count
 
 ```{r}
 
-# df_cbctvolume <- inner_join(df_airvolume, df_clinical_opc %>% select(patient, rt_fractions), by="patient")
 df_cbctvolume <- df_cbctvolume %>% filter(rt_fractions == 35)
-
-```
-
-
-```{r}
-
 
 df_cbctvolume %>%
   filter(Roi == 'x_GTVp_Tracking') %>%
@@ -278,7 +271,6 @@ df_cbctvolume %>%
   labs(title = "Volume of Primary Tumor over the course of treatment for all patients",
        x = "fraction",
        y = "Volume of Primary Tumor")
-
 
 # REMOVE OUTLIER PATIENT
 patients_to_remove <- df_cbctvolume %>%
