@@ -459,4 +459,7 @@ create_patient_plot <- function(patient_id) {
   ) +
   draw_label(patient_id, x = 0.1, y = 0.95, hjust = 0, vjust = 1, fontface = "bold", size = 10)
 
+# Create plots for all shared patients
+all_patient_plots <- lapply(shared_patients, create_patient_plot)
+
 
