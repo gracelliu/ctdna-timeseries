@@ -447,4 +447,16 @@ create_patient_plot <- function(patient_id) {
     ) +
     theme_minimal()
 
+  # Combine plots using cowplot
+  combined_plot <- plot_grid(
+    tumor_volume_plot,
+    air_volume_plot,
+    ctdna_plot,
+    ncol = 1,
+    labels = c("", "", ""),
+    label_size = 10,
+    label_fontface = "bold"
+  ) +
+  draw_label(patient_id, x = 0.1, y = 0.95, hjust = 0, vjust = 1, fontface = "bold", size = 10)
+
 
