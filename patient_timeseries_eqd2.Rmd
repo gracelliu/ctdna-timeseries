@@ -404,6 +404,7 @@ df_cbctvolume_shared <- df_cbctvolume %>%
 df_hpvseq_dates_shared <- df_hpvseq_dates %>%
   filter(patient %in% shared_patients)
 
+# Function to create plots for each patient
 create_patient_plot <- function(patient_id) {
   # Tumor volume plot
   tumor_volume_plot <- df_cbctvolume_shared %>%
@@ -458,6 +459,9 @@ create_patient_plot <- function(patient_id) {
     label_fontface = "bold"
   ) +
   draw_label(patient_id, x = 0.1, y = 0.95, hjust = 0, vjust = 1, fontface = "bold", size = 10)
+
+  return(combined_plot)
+}
 
 # Create plots for all shared patients
 all_patient_plots <- lapply(shared_patients, create_patient_plot)
