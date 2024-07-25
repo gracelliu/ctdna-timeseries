@@ -425,5 +425,26 @@ create_patient_plot <- function(patient_id) {
          y = "Air Volume in Primary Tumor") +
     theme_minimal()
 
+  # ctDNA concentration plot
+  ctdna_plot <- df_hpvseq_dates_shared %>%
+    filter(patient == patient_id) %>%
+    ggplot(aes(x = fraction, y = seq_copies_mL_log, group = patient)) +
+    geom_line(size=0.1, color='gray30', na.rm = TRUE) + 
+    geom_point(aes(color = timepoint), size = 1) +
+    scale_color_manual(values = c(
+      "baseline" = "#0072B2",
+      "early" = "#D55E00",
+      "mid" = "#CC79A7",
+      "followup" = "#009E73"
+    )) +
+    scale_x_continuous(
+      breaks = scales::pretty_breaks(n = 10)
+    ) +
+    labs(
+      title = "HPV ctDNA Concentration over the course of treatment",
+      x = "Fraction",
+      y = "HPV ctDNA Concentration (log scale)"
+    ) +
+    theme_minimal()
 
 
