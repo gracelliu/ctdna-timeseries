@@ -415,6 +415,15 @@ create_patient_plot <- function(patient_id) {
          y = "Volume of Primary Tumor") +
     theme_minimal()
 
+  # Air volume plot
+  air_volume_plot <- df_cbctvolume_shared %>%
+    filter(patient == patient_id, Roi == 'x_Air_GTVp_Expanded05') %>%
+    ggplot(aes(x = fraction, y = percent_vol)) +
+    geom_line(size=0.2) +
+    labs(title = "Air Volume in Primary Tumor over course of treatment",
+         x = "Fraction",
+         y = "Air Volume in Primary Tumor") +
+    theme_minimal()
 
 
 
