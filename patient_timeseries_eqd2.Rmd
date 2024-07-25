@@ -360,8 +360,10 @@ print(df_hpvseq_dates)
 
 ```{r}
 
+df_hpvseq_dates$seq_copies_mL_log <- log1p(df_hpvseq_dates$seq_copies_mL)
+
 # Create the plot
-ggplot(df_hpvseq_dates, aes(x = fraction, y = seq_copies_mL, group = patient)) +
+ggplot(df_hpvseq_dates, aes(x = fraction, y = seq_copies_mL_log, group = patient)) +
   geom_line(size=0.1, color='gray30',na.rm = TRUE) + 
   geom_point(aes(color = timepoint), size = 1) +
   scale_color_manual(values = c(
