@@ -466,4 +466,9 @@ create_patient_plot <- function(patient_id) {
 # Create plots for all shared patients
 all_patient_plots <- lapply(shared_patients, create_patient_plot)
 
+# Save each plot as a file or display them in RStudio
+for (i in 1:length(shared_patients)) {
+  ggsave(filename = paste0("patient_plot_", shared_patients[i], ".png"), plot = all_patient_plots[[i]], width = 8, height = 10)
+}
+
 
