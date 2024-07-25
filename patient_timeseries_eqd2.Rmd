@@ -262,6 +262,7 @@ common_count
 
 ```{r}
 
+# tumor volume
 df_cbctvolume <- df_cbctvolume %>% filter(rt_fractions == 35)
 
 df_cbctvolume %>%
@@ -272,7 +273,10 @@ df_cbctvolume %>%
        x = "fraction",
        y = "Volume of Primary Tumor")
 
-# REMOVE OUTLIER PATIENT
+
+# air volume 
+
+# remove outlier patient 
 patients_to_remove <- df_cbctvolume %>%
   filter(fraction == 10 & percent_vol < -50) %>%
   pull(patient)
