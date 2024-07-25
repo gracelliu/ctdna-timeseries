@@ -393,6 +393,16 @@ ggplot(df_hpvseq_dates, aes(x = fraction, y = seq_copies_mL_log, group = patient
 
 
 
+```{r}
+
+# Filter patients that are in both datasets
+shared_patients <- intersect(df_cbctvolume$patient, df_hpvseq_dates$patient)
+
+df_cbctvolume_shared <- df_cbctvolume %>%
+  filter(patient %in% shared_patients)
+
+df_hpvseq_dates_shared <- df_hpvseq_dates %>%
+  filter(patient %in% shared_patients)
 
 
 
