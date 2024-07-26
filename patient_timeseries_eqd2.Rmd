@@ -411,37 +411,34 @@ create_patient_plot <- function(patient_id) {
   tumor_volume_plot <- df_cbctvolume_shared %>%
     filter(patient == patient_id, Roi == 'x_GTVp_Tracking') %>%
     ggplot(aes(x = fraction, y = percent_vol)) +
-    geom_line(size=0.2) +
+    geom_line(size=1, color='#4AAFD5') +
     labs(title = "Volume of Primary Tumor over the course of treatment",
          x = "Fraction",
          y = "Volume of Primary Tumor") +
-    scale_x_continuous(limits = c(1, 40)) +
-    theme_minimal()
+    scale_x_continuous(limits = c(1, 40))
 
   # Air volume plot
   air_volume_plot <- df_cbctvolume_shared %>%
     filter(patient == patient_id, Roi == 'x_Air_GTVp_Expanded05') %>%
     ggplot(aes(x = fraction, y = percent_vol)) +
-    geom_line(size=0.2) +
+    geom_line(size=1, color='#91B187') +
     labs(title = "Air Volume in Primary Tumor over course of treatment",
          x = "Fraction",
          y = "Air Volume in Primary Tumor") +
-    scale_x_continuous(limits = c(1, 40)) +
-    theme_minimal()
+    scale_x_continuous(limits = c(1, 40))
 
   # ctDNA concentration plot
   ctdna_plot <- df_hpvseq_dates_shared %>%
     filter(patient == patient_id) %>%
     ggplot(aes(x = fraction, y = seq_copies_mL_log, group = patient)) +
-    geom_line(size=0.1, color='gray30', na.rm = TRUE) + 
-    geom_point(size = 1) +
+    geom_line(size=1, color='#E7A339', na.rm = TRUE) + 
+    geom_point(size = 1, color="black") +
     scale_x_continuous(limits = c(1, 40), breaks = scales::pretty_breaks(n = 10)) +
     labs(
       title = "HPV ctDNA Concentration over the course of treatment",
       x = "Fraction",
       y = "HPV ctDNA Concentration (log scale)"
-    ) +
-    theme_minimal()
+    ) 
 
   # Combine plots using cowplot
   combined_plot <- plot_grid(
