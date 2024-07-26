@@ -38,6 +38,7 @@ library(hrbrthemes)
 library(tint)
 library(tufte)
 library(cowplot)
+library(grid)
 
 ggthemr("fresh")
 
@@ -470,9 +471,6 @@ all_patient_plots <- lapply(shared_patients, create_patient_plot)
 for (i in 1:length(shared_patients)) {
   ggsave(filename = paste0("patient_plot_", shared_patients[i], ".png"), plot = all_patient_plots[[i]], width = 8, height = 10)
 }
-
-# Display the first patient's plot as an example
-print(all_patient_plots[[1]])
 
 
 ```
