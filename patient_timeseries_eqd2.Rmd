@@ -389,7 +389,7 @@ ggplot(df_hpvseq_dates, aes(x = fraction, y = seq_copies_mL_log, group = patient
     breaks = scales::pretty_breaks(n = 10)
   ) +
   labs(
-    title = "HPV ctDNA Concentration over the course of treatment for all patients",
+    title = "HPV ctDNA Concentration over treatment",
     x = "Fraction",
     y = "HPV ctDNA Concentration (log scale)"
   ) 
@@ -408,9 +408,9 @@ ggplot(df_hpvseq_dates, aes(x = fraction, y = percent_hpvseq, group = patient)) 
     breaks = scales::pretty_breaks(n = 10)
   ) +
   labs(
-    title = "HPV ctDNA Concentration over the course of treatment for all patients",
+    title = "% change in HPV ctDNA Concentration over treatment",
     x = "Fraction",
-    y = "HPV ctDNA Concentration (log scale)"
+    y = "% change in ctDNA"
   ) 
 
 ```
@@ -502,6 +502,74 @@ ggsave(filename = plot_filename, plot = patient_plot, width = 8, height = 10)
 ```
 
 
+```{r}
+
+# Filter patients that are in both datasets
+shared_patients <- intersect(df_cbctvolume$patient, df_hpvseq_dates$patient)
+
+df_cbctvolume_shared <- df_cbctvolume %>%
+  filter(patient %in% shared_patients)
+
+df_hpvseq_dates_shared <- df_hpvseq_dates %>%
+  filter(patient %in% shared_patients)
+
+# Function to create plots for each patient
+create_patient_plot <- function(patient_id) {
+  # Tumor volume plot
+  tumor_volume_plot <- df_cbctvolume_shared %>%
+    filter(patient == patient_id, Roi == 'x_GTVp_Tracking') %>%
+    ggplot(aes(x = fraction, y = percent_vol)) +
+    geom_line(size=1, color='#4AAFD5') +
+    scale_x_continuous(limits = c(1, 40)) +
+    labs(x = "Fraction",
+         y = "% Change of Tumor Volume") 
+
+  # Air volume plot
+  air_volume_plot <- df_cbctvolume_shared %>%
+    filter(patient == patient_id, Roi == 'x_Air_GTVp_Expanded05') %>%
+    ggplot(aes(x = fraction, y = percent_vol)) +
+    geom_line(size=1, color='#91B187') +
+    scale_x_continuous(limits = c(1, 40)) +
+    labs(x = "Fraction",
+         y = "% Change of Air Volume") 
+
+  # ctDNA concentration plot
+  ctdna_plot <- df_hpvseq_dates_shared %>%
+    filter(patient == patient_id) %>%
+    ggplot(aes(x = fraction, y = seq_copies_mL_log, group = patient)) +
+    geom_line(size=1, color='#E7A339', na.rm = TRUE) + 
+    geom_point(size = 1, color="black") +
+    scale_x_continuous(limits = c(1, 40), breaks = scales::pretty_breaks(n = 10)) +
+    labs(x = "Fraction",
+         y = "% Change of HPV ctDNA") 
+
+  # Create labels for the side
+  label_gtv <- ggdraw() + draw_label("GTV", x = 0.5, y = 0.5, angle = 90, hjust = 0.5, vjust = 0, size = 30, fontface = "bold")
+  label_fate <- ggdraw() + draw_label("FATE", x = 0.5, y = 0.5, angle = 90, hjust = 0.5, vjust = 0, size = 30, fontface = "bold")
+  label_ctdna <- ggdraw() + draw_label("ctDNA", x = 0.5, y = 0.5, angle = 90, hjust = 0.5, vjust = 0, size = 30, fontface = "bold")
+
+  # Combine plots and labels using cowplot
+  combined_plot <- plot_grid(
+    plot_grid(label_gtv, label_fate, label_ctdna, ncol = 1),
+    plot_grid(tumor_volume_plot, air_volume_plot, ctdna_plot, ncol = 1, align = "v"),
+    ncol = 2, rel_widths = c(0.1, 1)
+  ) +
+    ggtitle(paste("Patient ID:", patient_id)) +
+    theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"))
+
+  return(combined_plot)
+}
+
+# Create and save plot for a single patient
+test_patient_id <- shared_patients[1]  # Change this to test different patient IDs
+patient_plot <- create_patient_plot(test_patient_id)
+
+# Save the plot in the ../results directory
+plot_filename <- paste0("../results/patient_plot_", test_patient_id, ".png")
+ggsave(filename = plot_filename, plot = patient_plot, width = 8, height = 10)
+
+
+```
 
 
 
