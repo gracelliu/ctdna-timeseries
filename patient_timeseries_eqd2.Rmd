@@ -427,8 +427,21 @@ df_cbctvolume_shared <- df_cbctvolume %>%
 df_hpvseq_dates_shared <- df_hpvseq_dates %>%
   filter(patient %in% shared_patients)
 
+```
+
+```{r}
+
 # Function to create plots for each patient
 create_patient_plot <- function(patient_id) {
+  # Adjust the data for plotting
+  df_patient <- df_hpvseq_dates_shared %>%
+    filter(patient == patient_id) %>%
+    mutate(fraction_label = ifelse(fraction == 40, "Follow-up", as.character(fraction)))
+
+  # Custom x-axis breaks and labels
+  x_breaks <- c(seq(0, 35, by = 5), 40)
+  x_labels <- c(seq(0, 35, by = 5), "Follow-up")
+
   # Tumor volume plot
   tumor_volume_plot <- df_cbctvolume_shared %>%
     filter(patient == patient_id, Roi == 'x_GTVp_Tracking') %>%
@@ -493,6 +506,3 @@ ggsave(filename = plot_filename, plot = patient_plot, width = 8, height = 10)
 # }
 
 ```
-
-
-
