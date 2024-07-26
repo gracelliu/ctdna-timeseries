@@ -459,7 +459,7 @@ create_patient_plot <- function(patient_id) {
 # Create plots for all shared patients
 all_patient_plots <- lapply(shared_patients, create_patient_plot)
 
-# Save each plot to a different file in the ../results directory
+# Save each plot in the ../results directory
 for (i in seq_along(shared_patients)) {
   patient_id <- shared_patients[i]
   plot_filename <- paste0("../results/patient_plot_", patient_id, ".png")
