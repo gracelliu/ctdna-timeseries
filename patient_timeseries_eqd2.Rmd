@@ -456,15 +456,24 @@ create_patient_plot <- function(patient_id) {
   return(combined_plot)
 }
 
-# Create plots for all shared patients
-all_patient_plots <- lapply(shared_patients, create_patient_plot)
+# Create and save plot for a single patient
+test_patient_id <- shared_patients[1]  # Change this to test different patient IDs
+patient_plot <- create_patient_plot(test_patient_id)
 
-# Save each plot in the ../results directory
-for (i in seq_along(shared_patients)) {
-  patient_id <- shared_patients[i]
-  plot_filename <- paste0("../results/patient_plot_", patient_id, ".png")
-  ggsave(filename = plot_filename, plot = all_patient_plots[[i]], width = 8, height = 10)
-}
+# Save the plot in the ../results directory
+plot_filename <- paste0("../results/patient_plot_", test_patient_id, ".png")
+ggsave(filename = plot_filename, plot = patient_plot, width = 8, height = 10)
+
+
+# # Create plots for all shared patients
+# all_patient_plots <- lapply(shared_patients, create_patient_plot)
+# 
+# # Save each plot in the ../results directory
+# for (i in seq_along(shared_patients)) {
+#   patient_id <- shared_patients[i]
+#   plot_filename <- paste0("../results/patient_plot_", patient_id, ".png")
+#   ggsave(filename = plot_filename, plot = all_patient_plots[[i]], width = 8, height = 10)
+# }
 
 
 ```
