@@ -434,16 +434,8 @@ create_patient_plot <- function(patient_id) {
     filter(patient == patient_id) %>%
     ggplot(aes(x = fraction, y = seq_copies_mL_log, group = patient)) +
     geom_line(size=0.1, color='gray30', na.rm = TRUE) + 
-    geom_point(aes(color = timepoint), size = 1) +
-    scale_color_manual(values = c(
-      "baseline" = "#0072B2",
-      "early" = "#D55E00",
-      "mid" = "#CC79A7",
-      "followup" = "#009E73"
-    )) +
-    scale_x_continuous(
-      breaks = scales::pretty_breaks(n = 10)
-    ) +
+    geom_point(size = 1) +
+    scale_x_continuous(limits = c(1, 40), breaks = scales::pretty_breaks(n = 10)) +
     labs(
       title = "HPV ctDNA Concentration over the course of treatment",
       x = "Fraction",
@@ -456,12 +448,10 @@ create_patient_plot <- function(patient_id) {
     tumor_volume_plot,
     air_volume_plot,
     ctdna_plot,
-    ncol = 1,
-    labels = c("", "", ""),
-    label_size = 10,
-    label_fontface = "bold"
+    ncol = 1
   ) +
-  draw_label(patient_id, x = 0.1, y = 0.95, hjust = 0, vjust = 1, fontface = "bold", size = 10)
+    ggtitle(paste("Patient ID:", patient_id)) +
+    theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"))
 
   return(combined_plot)
 }
