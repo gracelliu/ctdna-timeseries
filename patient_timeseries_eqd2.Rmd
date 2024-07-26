@@ -392,6 +392,20 @@ ggplot(df_hpvseq_dates, aes(x = fraction, y = seq_copies_mL_log, group = patient
     title = "HPV ctDNA Concentration over the course of treatment for all patients",
     x = "Fraction",
     y = "HPV ctDNA Concentration (log scale)"
+  ) 
+
+# Create % change ctDNA plot
+ggplot(df_hpvseq_dates, aes(x = fraction, y = percent_hpvseq, group = patient)) +
+  geom_line(size=0.1, color='gray30',na.rm = TRUE) + 
+  geom_point(aes(color = timepoint), size = 1) +
+  scale_color_manual(values = c(
+    "baseline" = "#0072B2",
+    "early" = "#D55E00",
+    "mid" = "#CC79A7",
+    "followup" = "#009E73"
+  )) +
+  scale_x_continuous(
+    breaks = scales::pretty_breaks(n = 10)
   ) +
   theme_minimal() +
   theme(
