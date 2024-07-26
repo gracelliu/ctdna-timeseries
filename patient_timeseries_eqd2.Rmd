@@ -415,6 +415,7 @@ create_patient_plot <- function(patient_id) {
     labs(title = "Volume of Primary Tumor over the course of treatment",
          x = "Fraction",
          y = "Volume of Primary Tumor") +
+    scale_x_continuous(limits = c(1, 40)) +
     theme_minimal()
 
   # Air volume plot
@@ -425,6 +426,7 @@ create_patient_plot <- function(patient_id) {
     labs(title = "Air Volume in Primary Tumor over course of treatment",
          x = "Fraction",
          y = "Air Volume in Primary Tumor") +
+    scale_x_continuous(limits = c(1, 40)) +
     theme_minimal()
 
   # ctDNA concentration plot
