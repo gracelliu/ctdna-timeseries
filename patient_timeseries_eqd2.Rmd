@@ -415,7 +415,8 @@ create_patient_plot <- function(patient_id) {
     labs(title = "Volume of Primary Tumor over the course of treatment",
          x = "Fraction",
          y = "Volume of Primary Tumor") +
-    scale_x_continuous(limits = c(1, 40))
+    scale_x_continuous(limits = c(1, 40)) +
+    theme(axis.title.y = element_text(size = 14, face = "bold"))
 
   # Air volume plot
   air_volume_plot <- df_cbctvolume_shared %>%
@@ -425,7 +426,8 @@ create_patient_plot <- function(patient_id) {
     labs(title = "Air Volume in Primary Tumor over course of treatment",
          x = "Fraction",
          y = "Air Volume in Primary Tumor") +
-    scale_x_continuous(limits = c(1, 40))
+    scale_x_continuous(limits = c(1, 40)) +
+    theme(axis.title.y = element_text(size = 14, face = "bold"))
 
   # ctDNA concentration plot
   ctdna_plot <- df_hpvseq_dates_shared %>%
@@ -438,7 +440,8 @@ create_patient_plot <- function(patient_id) {
       title = "HPV ctDNA Concentration over the course of treatment",
       x = "Fraction",
       y = "HPV ctDNA Concentration (log scale)"
-    ) 
+    ) +
+    theme(axis.title.y = element_text(size = 14, face = "bold"))
 
   # Combine plots using cowplot
   combined_plot <- plot_grid(
