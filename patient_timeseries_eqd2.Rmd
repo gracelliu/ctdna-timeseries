@@ -363,7 +363,19 @@ print(df_hpvseq_dates)
 
 df_hpvseq_dates$seq_copies_mL_log <- log1p(df_hpvseq_dates$seq_copies_mL)
 
-# Create the plot
+# Calculate percent change from baseline for each patient
+df_hpvseq_dates <- df_hpvseq_dates %>%
+  group_by(patient) %>%
+  arrange(fraction) %>%  # Ensure data is sorted by fraction within each patient group
+  mutate(
+    baseline_seq_log = first(seq_copies_mL_log, order_by = fraction),  # Get the first value as baseline
+    percent_hpvseq = (seq_copies_mL_log - baseline_seq_log) / baseline_seq_log * 100
+  ) %>%
+  ungroup() %>%
+  select(-baseline_seq_log)  # Remove the temporary baseline column
+
+
+# Create log ctDNA plot
 ggplot(df_hpvseq_dates, aes(x = fraction, y = seq_copies_mL_log, group = patient)) +
   geom_line(size=0.1, color='gray30',na.rm = TRUE) + 
   geom_point(aes(color = timepoint), size = 1) +
