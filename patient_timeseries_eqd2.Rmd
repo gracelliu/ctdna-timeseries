@@ -484,9 +484,9 @@ create_patient_plot <- function(patient_id) {
   
   
   # Create labels for the side
-  label_gtv <- ggdraw() + draw_label("GTV", x = 0.5, y = 0.5, angle = 90, hjust = 0.5, vjust = 0.5, size = 25, fontface = "bold")
-  label_fate <- ggdraw() + draw_label("FATE", x = 0.5, y = 0.5, angle = 90, hjust = 0.5, vjust = 0.5, size = 25, fontface = "bold")
-  label_ctdna <- ggdraw() + draw_label("ctDNA", x = 0.5, y = 0.5, angle = 90, hjust = 0.5, vjust = 0.5, size = 25, fontface = "bold")
+  label_gtv <- ggdraw() + draw_label("GTV", x = 0.5, y = 0.9, hjust = 0.5, vjust = 0.5, size = 15, fontface = "bold")
+  label_fate <- ggdraw() + draw_label("FATE", x = 0.5, y = 0.9, hjust = 0.5, vjust = 0.5, size = 15, fontface = "bold")
+  label_ctdna <- ggdraw() + draw_label("ctDNA", x = 0.5, y = 0.9, hjust = 0.5, vjust = 0.5, size = 15, fontface = "bold")
 
   # Combine labels and plots
   plots_combined <- plot_grid(
@@ -524,3 +524,4 @@ ggsave(filename = plot_filename, plot = patient_plot, width = 8, height = 10)
 # }
 
 ```
+
