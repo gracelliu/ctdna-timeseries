@@ -450,7 +450,7 @@ create_patient_plot <- function(patient_id) {
   # ctDNA concentration plot
   ctdna_plot <- df_hpvseq_dates_shared %>%
     filter(patient == patient_id) %>%
-    ggplot(aes(x = fraction, y = seq_copies_mL_log, group = patient)) +
+    ggplot(aes(x = fraction, y = percent_hpvseq, group = patient)) +
     geom_line(size=1, color='#E7A339', na.rm = TRUE) + 
     geom_point(size = 1, color="black") +
     scale_x_continuous(limits = c(1, 40), breaks = scales::pretty_breaks(n = 10)) +
