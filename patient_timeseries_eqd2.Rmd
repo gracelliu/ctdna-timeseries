@@ -447,45 +447,63 @@ create_patient_plot <- function(patient_id) {
     filter(patient == patient_id, Roi == 'x_GTVp_Tracking') %>%
     ggplot(aes(x = fraction, y = percent_vol)) +
     geom_line(size=1, color='#4AAFD5') +
-    scale_x_continuous(limits = c(1, 40)) +
+    scale_x_continuous(limits = c(1, 40), breaks = x_breaks, labels = x_labels) +
     labs(x = "Fraction",
-         y = "% Change of Tumor Volume") 
+         y = "% Change \n Tumor Volume") +
+    theme(axis.title = element_text(size = 14, face = "bold"),
+          axis.text = element_text(size = 12),
+          axis.ticks.length = unit(0.25, "cm")) +
+    geom_vline(xintercept = 35, linetype = "dashed", color = "red", size = 0.5)
 
   # Air volume plot
   air_volume_plot <- df_cbctvolume_shared %>%
     filter(patient == patient_id, Roi == 'x_Air_GTVp_Expanded05') %>%
     ggplot(aes(x = fraction, y = percent_vol)) +
     geom_line(size=1, color='#91B187') +
-    scale_x_continuous(limits = c(1, 40)) +
+    scale_x_continuous(limits = c(1, 40), breaks = x_breaks, labels = x_labels) +
     labs(x = "Fraction",
-         y = "% Change of Air Volume") 
-
+         y = "% Change \n Air Volume") +
+    theme(axis.title = element_text(size = 14, face = "bold"),
+          axis.text = element_text(size = 12),
+          axis.ticks.length = unit(0.25, "cm")) +
+    geom_vline(xintercept = 35, linetype = "dashed", color = "red", size = 0.5)
+    
   # ctDNA concentration plot
-  ctdna_plot <- df_hpvseq_dates_shared %>%
-    filter(patient == patient_id) %>%
+  ctdna_plot <- df_patient %>%
     ggplot(aes(x = fraction, y = percent_hpvseq, group = patient)) +
     geom_line(size=1, color='#E7A339', na.rm = TRUE) + 
     geom_point(size = 1, color="black") +
-    scale_x_continuous(limits = c(1, 40), breaks = scales::pretty_breaks(n = 10)) +
+    scale_x_continuous(limits = c(1, 40), breaks = x_breaks, labels = x_labels) +
     labs(x = "Fraction",
-         y = "% Change of HPV ctDNA") 
+         y = "% Change \n HPV ctDNA") +
+    theme(axis.title = element_text(size = 14, face = "bold"),
+          axis.text = element_text(size = 12),
+          axis.ticks.length = unit(0.25, "cm")) +
+    geom_vline(xintercept = 35, linetype = "dashed", color = "red", size = 0.5)
 
+  
+  
   # Create labels for the side
-  label_gtv <- ggdraw() + draw_label("GTV", x = 0.5, y = 0.5, angle = 90, hjust = 0.5, vjust = 0, size = 30, fontface = "bold")
-  label_fate <- ggdraw() + draw_label("FATE", x = 0.5, y = 0.5, angle = 90, hjust = 0.5, vjust = 0, size = 30, fontface = "bold")
-  label_ctdna <- ggdraw() + draw_label("ctDNA", x = 0.5, y = 0.5, angle = 90, hjust = 0.5, vjust = 0, size = 30, fontface = "bold")
+  label_gtv <- ggdraw() + draw_label("GTV", x = 0.5, y = 0.5, angle = 90, hjust = 0.5, vjust = 0.5, size = 25, fontface = "bold")
+  label_fate <- ggdraw() + draw_label("FATE", x = 0.5, y = 0.5, angle = 90, hjust = 0.5, vjust = 0.5, size = 25, fontface = "bold")
+  label_ctdna <- ggdraw() + draw_label("ctDNA", x = 0.5, y = 0.5, angle = 90, hjust = 0.5, vjust = 0.5, size = 25, fontface = "bold")
 
-  # Combine plots and labels using cowplot
-  combined_plot <- plot_grid(
+  # Combine labels and plots
+  plots_combined <- plot_grid(
     plot_grid(label_gtv, label_fate, label_ctdna, ncol = 1),
     plot_grid(tumor_volume_plot, air_volume_plot, ctdna_plot, ncol = 1, align = "v"),
     ncol = 2, rel_widths = c(0.1, 1)
-  ) +
-    ggtitle(paste("Patient ID:", patient_id)) +
-    theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"))
+  )
 
-  return(combined_plot)
+  # Create title for the plot
+  title <- ggdraw() + draw_label(paste("Patient ID:", patient_id), size = 16, fontface = "bold")
+
+  # Combine title and the rest of the plots
+  final_plot <- plot_grid(title, plots_combined, ncol = 1, rel_heights = c(0.1, 1))
+
+  return(final_plot)
 }
+
 
 # Create and save plot for a single patient
 test_patient_id <- shared_patients[1]  # Change this to test different patient IDs
