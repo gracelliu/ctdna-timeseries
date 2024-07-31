@@ -331,6 +331,22 @@ ggplot() +
 
 ```
 
+```{r}
+
+# Create the plot with lines colored based on overall change
+ggplot(df_filtered_gtv, aes(x = fraction, y = percent_vol, group = Mrn, color = overall_change)) +
+  geom_line(size = 0.2) +
+  scale_color_manual(values = c( "negative" = "darkgrey", "positive" = "#78BBC1")) +
+  labs(title = "Tracking Percent Change in Tumor Volume Over Fractions",
+       x = "Fraction",
+       y = "Percent Change in Tumor Volume",
+       color = "Overall Change")
+
+# Calculate the average lines for positive and negative changes
+average_lines <- df_filtered_gtv %>%
+  group_by(fraction, overall_change) %>%
+  summarise(avg_percent_vol = mean(percent_vol, na.rm = TRUE)) %>%
+  ungroup()
 
 
 ### Air volume over fractions 
