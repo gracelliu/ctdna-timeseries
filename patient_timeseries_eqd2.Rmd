@@ -407,11 +407,7 @@ ggplot(df_hpvseq_dates, aes(x = fraction, y = percent_hpvseq, group = patient)) 
   scale_x_continuous(
     breaks = scales::pretty_breaks(n = 10)
   ) +
-  labs(
-    title = "% change in HPV ctDNA Concentration over treatment",
-    x = "Fraction",
-    y = "% change in ctDNA"
-  ) 
+  labs(x = "Fraction", y = "Percent Change in ctDNA []") 
 
 ```
 
