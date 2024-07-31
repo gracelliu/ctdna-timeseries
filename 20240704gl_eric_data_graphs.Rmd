@@ -475,12 +475,12 @@ df_3_month <- df_hpv_conc %>%
 # Sequence copies by T Stage 
 t_baseline <- ggplot(df_baseline, aes(x = stage_t_ajcc8, y = seq_copies_mL_log)) +
   geom_boxplot(fill="antiquewhite4") +
-  labs(title = "Baseline")
+  labs(title = "Baseline", x=NULL, y=NULL)
 
 # Sequence copies by N Stage 
 n_baseline <- ggplot(df_baseline, aes(x = stage_n_ajcc8, y = seq_copies_mL_log)) +
   geom_boxplot(fill="antiquewhite4") +
-  labs(title = "Baseline")
+  labs(title = "Baseline", x=NULL, y=NULL)
 
 # # Sequence copies by Overall Stage
 # g3 <- ggplot(df_baseline, aes(x = stage_ajcc8, y = seq_copies_mL_log)) +
@@ -494,13 +494,12 @@ n_baseline <- ggplot(df_baseline, aes(x = stage_n_ajcc8, y = seq_copies_mL_log))
 # Sequence copies by T Stage 
 t_early <- ggplot(df_early_rt, aes(x = stage_t_ajcc8, y = seq_copies_mL_log)) +
   geom_boxplot(fill="antiquewhite3") +
-  labs(title = "Early")
+  labs(title = "Early", x=NULL, y=NULL)
 
 # Sequence copies by N Stage
 n_early <- ggplot(df_early_rt, aes(x = stage_n_ajcc8, y = seq_copies_mL_log)) +
   geom_boxplot(fill="antiquewhite3") +
-  labs(x = "Nodal Stage (N)",
-       y = "HPV Sequence Copies (count per mL)")
+  labs(title = "Early", x=NULL, y=NULL)
 
 # # Sequence copies by Overall Stage 
 # g3 <- ggplot(df_early_rt, aes(x = stage_ajcc8, y = seq_copies_mL_log)) +
@@ -514,14 +513,12 @@ n_early <- ggplot(df_early_rt, aes(x = stage_n_ajcc8, y = seq_copies_mL_log)) +
 # Sequence copies by T Stage 
 t_mid <- ggplot(df_mid_rt, aes(x = stage_t_ajcc8, y = seq_copies_mL_log)) +
   geom_boxplot(fill="antiquewhite2") +
-  labs(x = "Tumor Stage (T)",
-       y = "HPV Sequence Copies (count per mL)") 
+  labs(title = "Mid", x=NULL, y=NULL)
 
 # Sequence copies by N Stage 
 n_mid <- ggplot(df_mid_rt, aes(x = stage_n_ajcc8, y = seq_copies_mL_log)) +
   geom_boxplot(fill="antiquewhite2") +
-  labs(x = "Nodal Stage (N)",
-       y = "HPV Sequence Copies (count per mL)") 
+  labs(title = "Mid", x=NULL, y=NULL)
 
 # #Sequence copies by Overall Stage 
 # g3 <- ggplot(df_mid_rt, aes(x = stage_ajcc8, y = seq_copies_mL_log)) +
@@ -554,17 +551,30 @@ n_fu <- ggplot(df_3_month, aes(x = stage_n_ajcc8, y = seq_copies_mL_log)) +
 #        y = "HPV Sequence Copies (count per mL)") 
 
 
-t_combined_plot <- (t_baseline | t_early | t_mid) + 
-  plot_layout(ncol = 3) +
-  plot_annotation(title = "T")
-print(t_combined_plot)
+t_combined_plot <- ggarrange(t_baseline, t_early, t_mid,
+                    labels = NULL,
+                    ncol = 3, nrow = 1,
+                    common.legend = TRUE, legend = "bottom",
+                    align = "hv", 
+                    font.label = list(size = 10, color = "black", face = "bold", family = NULL, position = "top"))
+t_annotated <- annotate_figure(t_combined_plot, 
+                               left = textGrob("HPV ctDNA Copies", rot = 90, vjust = 0.2, gp = gpar(cex = 1.3)),
+                               bottom = textGrob("Tumour Stage (T)", gp = gpar(cex = 1.3)))
 
-n_combined_plot <- (n_baseline | n_early | n_mid) + 
-  plot_layout(ncol = 3) +
-  plot_annotation(title = "N")
-print(n_combined_plot)
+n_combined_plot <- ggarrange(n_baseline, n_early, n_mid,
+                    labels = NULL,
+                    ncol = 3, nrow = 1,
+                    common.legend = TRUE, legend = "bottom",
+                    align = "hv", 
+                    font.label = list(size = 10, color = "black", face = "bold", family = NULL, position = "top"))
+
+n_annotated <- annotate_figure(n_combined_plot, 
+                               left = textGrob("HPV ctDNA Copies", rot = 90, vjust = 0.2, gp = gpar(cex = 1.3)),
+                               bottom = textGrob("Nodal Stage (N)", gp = gpar(cex = 1.3)))
+
 
 ```
+
 
 
 
