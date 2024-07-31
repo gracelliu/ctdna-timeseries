@@ -448,7 +448,7 @@ create_patient_plot <- function(patient_id) {
     ggplot(aes(x = fraction, y = percent_vol)) +
     geom_line(size=1, color='#4AAFD5') +
     scale_x_continuous(limits = c(1, 40), breaks = x_breaks, labels = x_labels) +
-    labs(x = "Fraction",
+    labs(x = "",
          y = "% Change \n Tumor Volume") +
     theme(axis.title = element_text(size = 14, face = "bold"),
           axis.text = element_text(size = 12),
@@ -461,7 +461,7 @@ create_patient_plot <- function(patient_id) {
     ggplot(aes(x = fraction, y = percent_vol)) +
     geom_line(size=1, color='#91B187') +
     scale_x_continuous(limits = c(1, 40), breaks = x_breaks, labels = x_labels) +
-    labs(x = "Fraction",
+    labs(x = "",
          y = "% Change \n Air Volume") +
     theme(axis.title = element_text(size = 14, face = "bold"),
           axis.text = element_text(size = 12),
@@ -520,7 +520,7 @@ all_patient_plots <- lapply(shared_patients, create_patient_plot)
 for (i in seq_along(shared_patients)) {
   patient_id <- shared_patients[i]
   plot_filename <- paste0("../results/patient_plot_", patient_id, ".png")
-  ggsave(filename = plot_filename, plot = all_patient_plots[[i]], width = 8, height = 10)
+  ggsave(filename = plot_filename, plot = all_patient_plots[[i]], width = 12, height = 6)
 }
 
 ```
