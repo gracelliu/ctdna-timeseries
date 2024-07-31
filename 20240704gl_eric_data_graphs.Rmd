@@ -572,8 +572,8 @@ n_annotated <- annotate_figure(n_combined_plot,
                                left = textGrob("HPV ctDNA Copies", rot = 90, vjust = 0.2, gp = gpar(cex = 1.3)),
                                bottom = textGrob("Nodal Stage (N)", gp = gpar(cex = 1.3)))
 
-ggsave("../results/ctdna_Tstage_plot.png", t_annotated, width = 12, height = 6)
-ggsave("../results/ctdna_Nstage_plot.png", n_annotated, width = 12, height = 6)
+ggsave("../results/ctdna_Tstage_plot.png", t_annotated, width = 6, height = 3)
+ggsave("../results/ctdna_Nstage_plot.png", n_annotated, width = 6, height = 3)
 
 
 ```
