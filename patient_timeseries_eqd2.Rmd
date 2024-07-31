@@ -376,7 +376,7 @@ df_hpvseq_dates <- df_hpvseq_dates %>%
 
 
 # Create log ctDNA plot
-ggplot(df_hpvseq_dates, aes(x = fraction, y = seq_copies_mL_log, group = patient)) +
+g <- ggplot(df_hpvseq_dates, aes(x = fraction, y = seq_copies_mL_log, group = patient)) +
   geom_line(size=0.1, color='gray30',na.rm = TRUE) + 
   geom_point(aes(color = timepoint), size = 1) +
   scale_color_manual(values = c(
@@ -389,13 +389,16 @@ ggplot(df_hpvseq_dates, aes(x = fraction, y = seq_copies_mL_log, group = patient
     breaks = scales::pretty_breaks(n = 10)
   ) +
   labs(
-    title = "HPV ctDNA Concentration over treatment",
     x = "Fraction",
-    y = "HPV ctDNA Concentration (log scale)"
+    y = "HPV ctDNA []"
   ) 
 
+# Save plot with specific dimensions
+ggsave("../results/hpv_all.png", g, width = 5, height = 3)
+
+
 # Create % change ctDNA plot
-ggplot(df_hpvseq_dates, aes(x = fraction, y = percent_hpvseq, group = patient)) +
+g <- ggplot(df_hpvseq_dates, aes(x = fraction, y = percent_hpvseq, group = patient)) +
   geom_line(size=0.1, color='gray30',na.rm = TRUE) + 
   geom_point(aes(color = timepoint), size = 1) +
   scale_color_manual(values = c(
@@ -407,7 +410,10 @@ ggplot(df_hpvseq_dates, aes(x = fraction, y = percent_hpvseq, group = patient)) 
   scale_x_continuous(
     breaks = scales::pretty_breaks(n = 10)
   ) +
-  labs(x = "Fraction", y = "Percent Change in ctDNA []") 
+  labs(x = "Fraction", y = "Percent Change in HPV ctDNA []") 
+
+# Save plot with specific dimensions
+ggsave("../results/change_hpv_all.png", g, width = 5, height = 3)
 
 ```
 
