@@ -360,7 +360,7 @@ g <- ggplot() +
        color = "Overall Change")
 
 # Save plot with specific dimensions
-ggsave("../results/avg_air_all.png", g, width = 5, height = 3)
+ggsave("../results/avg_tumor_all.png", g, width = 5, height = 3)
 
 ```
 
@@ -489,7 +489,7 @@ g <- ggplot() +
        color = "Overall Change")
 
 # Save plot with specific dimensions
-ggsave("../results/avg_tumor_all.png", g, width = 5, height = 3)
+ggsave("../results/avg_air_all.png", g, width = 5, height = 3)
 
 
 ```
