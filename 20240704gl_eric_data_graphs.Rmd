@@ -475,7 +475,7 @@ average_lines <- df_filtered_air %>%
   ungroup()
 
 # Create the plot with lighter individual lines and thicker average lines
-ggplot() +
+g <- ggplot() +
   # Lighter individual lines
   geom_line(data = df_filtered_air, aes(x = fraction, y = percent_vol, group = Mrn, color = overall_change), alpha = 0.3) +
   # Thicker average lines
@@ -484,6 +484,10 @@ ggplot() +
   labs(x = "Fraction",
        y = "Percent Change in Air Volume",
        color = "Overall Change")
+
+
+# Save plot with specific dimensions
+ggsave("../results/avg_tumor_all", g, width = 4, height = 3)
 
 ```
 
