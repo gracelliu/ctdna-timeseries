@@ -341,6 +341,14 @@ ggplot() +
 df_filtered_air <- df_cbctfate_smooth %>%
   filter(Roi == "x_Air_GTVp_Expanded05" & cohort == "OPC")
 
+# remove outlier patient 
+patients_to_remove <- df_filtered_air %>%
+  filter(fraction == 10 & percent_vol < -50) %>%
+  pull(Mrn)
+
+df_filtered_air <- df_filtered_air %>%
+  filter(!Mrn %in% patients_to_remove)
+
 # Check that it's only what we want
 unique_count_roi <- df_filtered_air %>%
   distinct(Roi) %>% pull(Roi)
