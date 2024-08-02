@@ -39,6 +39,8 @@ library(tint)
 library(tufte)
 library(cowplot)
 library(grid)
+library(ggbeeswarm)
+
 
 ggthemr("fresh")
 
@@ -526,4 +528,182 @@ for (i in seq_along(shared_patients)) {
 }
 
 ```
+```{r}
+
+# Define quantile thresholds for risk groups
+quantiles <- quantile(pd_riskprediction$pf_hpvdna, probs = c(0.33, 0.67))
+vector_risk_groups <- c(-Inf, quantiles, Inf)
+vector_risk_group_names <- c('Low', 'Intermediate', 'High')
+
+# Classify risk groups in the main prediction data
+pd_riskprediction_logistic <- pd_riskprediction %>%
+  mutate(
+    risk_group = cut(
+      pf_hpvdna,
+      breaks = vector_risk_groups,
+      labels = vector_risk_group_names,
+      include.lowest = TRUE
+    ),
+    risk_group_numeric = as.numeric(risk_group)
+  )
+
+# Classify risk groups in the full prediction data
+pd_riskgroup <- pd_riskprediction_full %>%
+  mutate(
+    risk_group = cut(
+      pf_hpvdna,
+      breaks = vector_risk_groups,
+      labels = vector_risk_group_names,
+      include.lowest = TRUE
+    ),
+    risk_group_numeric = as.numeric(risk_group)
+  )
+
+# Display the first few rows to verify the results
+head(pd_riskprediction_logistic)
+head(pd_riskgroup)
+
+# Fit survival curves
+surv_fit <- survfit(Surv(time_to_recurrence, recurrence) ~ risk_group, data = pd_riskgroup)
+
+# Define color palette for risk groups
+palette_risk_group <- c(
+  "Low" = "#374E55",
+  "Intermediate" = "#DF8F44",
+  "High" = "#00A1D5"
+)
+
+# Plot Kaplan-Meier curves
+p_km_risk_group <- ggsurvplot(
+  surv_fit,
+  data = pd_riskgroup,
+  risk.table = TRUE,
+  pval = TRUE,
+  conf.int = TRUE,
+  xlab = "Time to Recurrence (months)",
+  ylab = "Survival Probability",
+  palette = palette_risk_group,
+  legend.title = "Risk Group",
+  legend.labs = c("Low", "Intermediate", "High"),
+  ggtheme = theme_minimal()
+)
+
+# Print the Kaplan-Meier plot
+print(p_km_risk_group)
+
+```
+```{r}
+
+# Define risk groups based on ctDNA levels
+vector_risk_groups = c(-Inf, val_threshold_pfhpvdna, log10(val_min_hpv), Inf)
+vector_risk_group_names = c('Low', 'Intermediate', 'High')
+
+# Classify risk groups in the main prediction data
+pd_riskprediction_logistic <- pd_riskprediction %>%
+  mutate(
+    risk_group = cut(
+      pf_hpvdna,
+      breaks = vector_risk_groups,
+      labels = vector_risk_group_names,
+      include.lowest = TRUE
+    ),
+    risk_group_numeric = as.numeric(risk_group)
+  )
+
+
+
+# Classify risk groups in the full prediction data
+pd_riskgroup <- pd_riskprediction_full %>%
+  mutate(
+    risk_group = cut(
+      pf_hpvdna,
+      breaks = vector_risk_groups,
+      labels = vector_risk_group_names,
+      include.lowest = TRUE
+    ),
+    risk_group_numeric = as.numeric(risk_group)
+  )
+
+
+# Fit survival curves
+surv_fit <- survfit(Surv(time_to_recurrence, recurrence) ~ risk_group, data = pd_riskgroup)
+
+# Define color palette for risk groups
+palette_risk_group <- c(
+  "Low" = "#374E55",
+  "Intermediate" = "#DF8F44",
+  "High" = "#00A1D5"
+)
+
+# Plot Kaplan-Meier curves
+p_km_risk_group <- ggsurvplot(
+  surv_fit,
+  data = pd_riskgroup,
+  risk.table = TRUE,
+  pval = TRUE,
+  conf.int = TRUE,
+  xlab = "Time to Recurrence (months)",
+  ylab = "Survival Probability",
+  palette = palette_risk_group,
+  legend.title = "Risk Group",
+  legend.labs = c("Low", "Intermediate", "High"),
+  ggtheme = theme_minimal()
+)
+
+# Print the Kaplan-Meier plot
+print(p_km_risk_group)
+
+```
+
+```{r}
+
+
+# Define color palette for risk groups
+palette_risk_group <- c(
+  "Low" = "#374E55",
+  "Intermediate" = "#DF8F44",
+  "High" = "#00A1D5"
+)
+
+# Boxplot visualization
+p_boxplot_risk_group <- pd_riskgroup %>%
+  ggplot(aes(
+    x = risk_group,
+    y = pf_hpvdna,
+    fill = risk_group
+  )) +
+  geom_boxplot() +
+  scale_fill_manual(values = palette_risk_group) +
+  labs(
+    x = 'Risk Group',
+    y = 'pfHPV DNA Level',
+    fill = 'Risk Group'
+  ) +
+  ggtitle('Boxplot of pfHPV DNA Levels by Risk Group') +
+  theme_minimal()
+
+print(p_boxplot_risk_group)
+
+# Beeswarm plot visualization
+p_beeswarm_risk_group <- pd_riskgroup %>%
+  ggplot(aes(
+    x = risk_group,
+    y = pf_hpvdna,
+    color = risk_group
+  )) +
+  geom_beeswarm(cex = 3) +
+  scale_color_manual(values = palette_risk_group) +
+  labs(
+    color = 'Risk Group',
+    y = 'pfHPV DNA Level'
+  ) +
+  ggtitle('Beeswarm Plot of pfHPV DNA Levels by Risk Group') +
+  theme_minimal() +
+  theme(legend.position = 'none')
+
+print(p_beeswarm_risk_group)
+
+
+```
+
 
