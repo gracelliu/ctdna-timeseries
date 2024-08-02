@@ -721,4 +721,36 @@ print(p_beeswarm_risk_group)
 
 ```
 
+```{r}
+
+
+# Fit survival curves
+surv_fit <- survfit(Surv(time_to_recurrence, recurrence) ~ risk_group, data = pd_riskgroup)
+
+# Define color palette for risk groups
+palette_risk_group <- c(
+  "Low" = "#374E55",
+  "Intermediate" = "#DF8F44",
+  "High" = "#00A1D5"
+)
+
+# Plot Kaplan-Meier curves
+p_km_risk_group <- ggsurvplot(
+  surv_fit,
+  data = pd_riskgroup,
+  risk.table = TRUE,
+  pval = TRUE,
+  conf.int = TRUE,
+  xlab = "Time to Recurrence (months)",
+  ylab = "Survival Probability",
+  palette = palette_risk_group,
+  legend.title = "Risk Group",
+  legend.labs = c("Low", "Intermediate", "High"),
+  ggtheme = theme_minimal()
+)
+
+# Print the Kaplan-Meier plot
+print(p_km_risk_group)
+
+```
 
