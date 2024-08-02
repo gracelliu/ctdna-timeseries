@@ -301,6 +301,77 @@ df_cbctvolume %>%
 
 
 ```{r}
+library(ggplot2)
+library(ggpubr)
+library(grid)
+library(dplyr)
+
+# Define the function for generating plots based on fraction
+create_combined_plots <- function(df_cbctvolume, fraction_label, fill_color) {
+  # Tumor volume by T Stage
+  t_stage_plot <- df_cbctvolume %>%
+    filter(Roi == 'x_GTVp_Tracking') %>%
+    ggplot(aes(x = stage_t_ajcc8, y = percent_vol)) +
+    geom_boxplot(fill = fill_color) +
+    labs(title = fraction_label, x = NULL, y = NULL) +
+    theme_minimal()
+
+  # Tumor volume by N Stage
+  n_stage_plot <- df_cbctvolume %>%
+    filter(Roi == 'x_GTVp_Tracking') %>%
+    ggplot(aes(x = stage_n_ajcc8, y = percent_vol)) +
+    geom_boxplot(fill = fill_color) +
+    labs(title = fraction_label, x = NULL, y = NULL) +
+    theme_minimal()
+  
+  return(list(t_stage_plot = t_stage_plot, n_stage_plot = n_stage_plot))
+}
+
+# Filter the dataset for each fraction and generate the plots
+
+# Fraction 1
+fraction1_plots <- create_combined_plots(df_cbctvolume %>% filter(fraction == 1), "Fraction 1", "antiquewhite4")
+
+# Fraction 7
+fraction7_plots <- create_combined_plots(df_cbctvolume %>% filter(fraction == 7), "Fraction 7", "antiquewhite3")
+
+# Fraction 16
+fraction16_plots <- create_combined_plots(df_cbctvolume %>% filter(fraction == 16), "Fraction 16", "antiquewhite2")
+
+# Combine Tumor Stage plots
+t_combined_plot <- ggarrange(
+  fraction1_plots$t_stage_plot, fraction7_plots$t_stage_plot, fraction16_plots$t_stage_plot,
+  labels = NULL,
+  ncol = 3, nrow = 1,
+  common.legend = TRUE, legend = "bottom",
+  align = "hv", 
+  font.label = list(size = 10, color = "black", face = "bold", family = NULL, position = "top")
+)
+t_annotated <- annotate_figure(t_combined_plot, 
+                               left = textGrob("Tumor Volume Change (%)", rot = 90, vjust = 0.2, gp = gpar(cex = 1.3)),
+                               bottom = textGrob("Tumour Stage (T)", gp = gpar(cex = 1.3)))
+
+# Combine Nodal Stage plots
+n_combined_plot <- ggarrange(
+  fraction1_plots$n_stage_plot, fraction7_plots$n_stage_plot, fraction16_plots$n_stage_plot,
+  labels = NULL,
+  ncol = 3, nrow = 1,
+  common.legend = TRUE, legend = "bottom",
+  align = "hv", 
+  font.label = list(size = 10, color = "black", face = "bold", family = NULL, position = "top")
+)
+n_annotated <- annotate_figure(n_combined_plot, 
+                               left = textGrob("Tumor Volume Change (%)", rot = 90, vjust = 0.2, gp = gpar(cex = 1.3)),
+                               bottom = textGrob("Nodal Stage (N)", gp = gpar(cex = 1.3)))
+
+# Save the plots with specific dimensions
+ggsave("../results/tumor_volume_Tstage_plot.png", t_annotated, width = 12, height = 6)
+ggsave("../results/tumor_volume_Nstage_plot.png", n_annotated, width = 12, height = 6)
+
+
+```
+
+```{r}
 
 df_hpvseq <- df_hpvseq %>% mutate(timepoint = recode(timepoint,
                             "Baseline" = "baseline",
@@ -563,33 +634,6 @@ pd_riskgroup <- pd_riskprediction_full %>%
 head(pd_riskprediction_logistic)
 head(pd_riskgroup)
 
-# Fit survival curves
-surv_fit <- survfit(Surv(time_to_recurrence, recurrence) ~ risk_group, data = pd_riskgroup)
-
-# Define color palette for risk groups
-palette_risk_group <- c(
-  "Low" = "#374E55",
-  "Intermediate" = "#DF8F44",
-  "High" = "#00A1D5"
-)
-
-# Plot Kaplan-Meier curves
-p_km_risk_group <- ggsurvplot(
-  surv_fit,
-  data = pd_riskgroup,
-  risk.table = TRUE,
-  pval = TRUE,
-  conf.int = TRUE,
-  xlab = "Time to Recurrence (months)",
-  ylab = "Survival Probability",
-  palette = palette_risk_group,
-  legend.title = "Risk Group",
-  legend.labs = c("Low", "Intermediate", "High"),
-  ggtheme = theme_minimal()
-)
-
-# Print the Kaplan-Meier plot
-print(p_km_risk_group)
 
 ```
 ```{r}
@@ -623,35 +667,6 @@ pd_riskgroup <- pd_riskprediction_full %>%
     ),
     risk_group_numeric = as.numeric(risk_group)
   )
-
-
-# Fit survival curves
-surv_fit <- survfit(Surv(time_to_recurrence, recurrence) ~ risk_group, data = pd_riskgroup)
-
-# Define color palette for risk groups
-palette_risk_group <- c(
-  "Low" = "#374E55",
-  "Intermediate" = "#DF8F44",
-  "High" = "#00A1D5"
-)
-
-# Plot Kaplan-Meier curves
-p_km_risk_group <- ggsurvplot(
-  surv_fit,
-  data = pd_riskgroup,
-  risk.table = TRUE,
-  pval = TRUE,
-  conf.int = TRUE,
-  xlab = "Time to Recurrence (months)",
-  ylab = "Survival Probability",
-  palette = palette_risk_group,
-  legend.title = "Risk Group",
-  legend.labs = c("Low", "Intermediate", "High"),
-  ggtheme = theme_minimal()
-)
-
-# Print the Kaplan-Meier plot
-print(p_km_risk_group)
 
 ```
 
