@@ -552,24 +552,24 @@ n_baseline <- ggplot(df_baseline, aes(x = stage_n_ajcc8, y = seq_copies_mL_log))
 # Sequence copies by T Stage 
 t_early <- ggplot(df_early_rt, aes(x = stage_t_ajcc8, y = seq_copies_mL_log)) +
   geom_boxplot(fill="antiquewhite3") +
-  labs(title = "Early", x=NULL, y=NULL)
+  labs(title = "Early RT", x=NULL, y=NULL)
 
 # Sequence copies by N Stage
 n_early <- ggplot(df_early_rt, aes(x = stage_n_ajcc8, y = seq_copies_mL_log)) +
   geom_boxplot(fill="antiquewhite3") +
-  labs(title = "Early", x=NULL, y=NULL)
+  labs(title = "Early RT", x=NULL, y=NULL)
 
 #### Mid RT
 
 # Sequence copies by T Stage 
 t_mid <- ggplot(df_mid_rt, aes(x = stage_t_ajcc8, y = seq_copies_mL_log)) +
   geom_boxplot(fill="antiquewhite2") +
-  labs(title = "Mid", x=NULL, y=NULL)
+  labs(title = "Mid RT", x=NULL, y=NULL)
 
 # Sequence copies by N Stage 
 n_mid <- ggplot(df_mid_rt, aes(x = stage_n_ajcc8, y = seq_copies_mL_log)) +
   geom_boxplot(fill="antiquewhite2") +
-  labs(title = "Mid", x=NULL, y=NULL)
+  labs(title = "Mid RT", x=NULL, y=NULL)
 
 
 t_combined_plot <- ggarrange(t_baseline, t_early, t_mid,
