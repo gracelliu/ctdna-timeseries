@@ -748,3 +748,120 @@ print(p_km_risk_group)
 
 ```
 
+
+
+```{r}
+
+# Filter for only OPC and Tracking
+df_filtered_gtv <- df_cbctfate_smooth %>%
+  filter(Roi == "x_GTVp_Tracking" & cohort == "OPC")
+
+# Calculate the overall change and classify as positive or negative
+overall_change_gtv <- df_filtered_gtv %>%
+  group_by(Mrn) %>%
+  summarise(overall_change_tumor = ifelse(smoothed[fraction == 35] > smoothed[fraction == 1], "positive", "negative"))
+
+# Join the overall change classification back to the original dataframe
+df_filtered_gtv <- df_filtered_gtv %>%
+  left_join(overall_change_gtv, by = "Mrn")
+
+# Filter df_hpvseq_dates to only include patients that exist in df_cbct_dates
+df_hpvseq_dates <- df_hpvseq_dates %>%
+  semi_join(df_cbct_dates, by = "patient")
+
+# Function to find the closest fraction date for each patient and timepoint
+find_closest_fraction <- function(patient, hpv_date) {
+  patient_cbct_dates <- df_cbct_dates %>% filter(patient == !!patient)
+  if (nrow(patient_cbct_dates) == 0) return(NA)
+  patient_cbct_dates <- patient_cbct_dates %>% mutate(date_diff = abs(difftime(date, hpv_date, units = "days")))
+  closest_fraction <- patient_cbct_dates %>% filter(date_diff == min(date_diff)) %>% select(fraction) %>% slice(1)
+  return(closest_fraction$fraction)
+}
+
+# Apply the function to each row in df_hpvseq_dates
+df_hpvseq_dates <- df_hpvseq_dates %>%
+  rowwise() %>%
+  mutate(fraction = find_closest_fraction(patient, date))
+
+# Modify the fraction column based on the timepoint
+df_hpvseq_dates <- df_hpvseq_dates %>%
+  mutate(fraction = ifelse(timepoint == "followup", 40, fraction))
+
+# Calculate overall change in ctDNA and classify as positive or negative
+overall_ctdna_change <- df_hpvseq_dates %>%
+  group_by(patient) %>%
+  summarize(overall_change_ctdna = ifelse(last(seq_copies_mL_log) > first(seq_copies_mL_log), "positive", "negative"))
+
+# Convert `patient` column to integer
+overall_ctdna_change <- overall_ctdna_change %>%
+  mutate(patient = as.integer(patient))
+
+# Merge the datasets on the patient identifier
+merged_data <- df_filtered_gtv %>%
+  left_join(overall_ctdna_change, by = c("Mrn" = "patient"))
+
+
+
+```
+
+
+
+```{r}
+# Inspect the data types and unique identifiers
+str(df_cbctvolume$patient)
+str(df_hpvseq_dates$patient)
+
+# Ensure there are no leading/trailing spaces and convert both to character
+df_filtered_gtv <- df_filtered_gtv %>%
+  mutate(Mrn = as.character(Mrn))
+
+df_hpvseq_dates <- df_hpvseq_dates %>%
+  mutate(patient = trimws(patient), patient = as.character(patient))
+
+# Calculate overall change in ctDNA and classify as positive or negative
+overall_ctdna_change <- df_hpvseq_dates %>%
+  group_by(patient) %>%
+  summarize(overall_change_ctdna = ifelse(last(seq_copies_mL_log) > first(seq_copies_mL_log), "positive", "negative"))
+
+# Merge the datasets on the patient identifier
+merged_data <- df_cbctvolume %>%
+  left_join(overall_ctdna_change, by = c("patient"))
+
+# Create the waterfall plot
+ggplot(merged_data, aes(x = reorder(Mrn, percent_vol), y = percent_vol, fill = overall_change_ctdna)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("positive" = "seagreen", "negative" = "lightcoral")) +
+  labs(title = "Waterfall Plot of Tumor Volume Change",
+       x = "Patient",
+       y = "Percent Change in Tumor Volume",
+       fill = "Overall Change in ctDNA") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+
+# Merge the datasets on the patient identifier
+merged_data <- df_cbctvolume %>%
+  filter(Roi == "x_GTVp_Tracking" & cohort == "OPC") %>%
+  inner_join(df_hpvseq_dates, by = "patient")
+
+
+```
+
+```{r}
+# Create the scatter plot
+ggplot(merged_data, aes(x = percent_vol, y = seq_copies_mL_log)) +
+  geom_point() +
+  labs(title = "Scatter Plot of ctDNA vs. Tumor Volume",
+       x = "Tumor Volume (percent_vol)",
+       y = "ctDNA (log scale)")
+
+```
+
+

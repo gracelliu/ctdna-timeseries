@@ -601,10 +601,6 @@ ggsave("../results/ctdna_Nstage_plot.png", n_annotated, width = 6, height = 3)
 
 
 
-
-```
-
-
 ### Graph dPCR Copies by Stage (AJCC8)
 
 
@@ -801,61 +797,97 @@ ggplot(df_hpv_conc, aes(x = timepoint, y = percentchange_seq_copies, group = pat
 
 
 
+
 ```{r}
 
-# Step 1: Ensure unique Mrn in df_filtered
-df_filtered_unique <- df_filtered_air %>%
-  select(Mrn, overall_change) %>%
-  distinct(Mrn, .keep_all = TRUE)
 
-# Step 2: Join df_clinical_opc and df_filtered_unique
-df_mrn_merge <- df_clinical_opc %>%
-  select(Mrn, patient) %>%
-  left_join(df_filtered_unique, by = "Mrn")
+df_ctdna_collectiondates_long <- df_ctdna_collectiondates %>% rename(baseline = date_ctdna_baseline,
+                                    early = date_ctdna_early, 
+                                    mid = date_ctdna_mid,
+                                    followup = date_ctdna_followup) %>%
+  gather(timepoint, date_ctdna, -patient)
 
-# Step 3: Merge df_mrn_merge with df_hpv_conc
-df_hpv_conc <- df_hpv_conc %>%
-  left_join(df_mrn_merge, by = "patient")
+df_cbctvolume = inner_join(df_cbctfate, df_clinical_opc, by="Mrn")
 
-average_lines <- df_hpv_conc %>%
-  group_by(timepoint, overall_change) %>%
-  summarise(avg_percentchange_seq_copies = mean(percentchange_seq_copies, na.rm = TRUE)) %>%
-  ungroup()
+# Initial data processing steps as provided
+df_hpvseq <- df_hpvseq %>% mutate(timepoint = recode(timepoint,
+                            "Baseline" = "baseline",
+                            "Early RT" = "early",
+                            "Mid RT" = "mid",
+                            "3 months" = "followup"))
+df_hpvseq_dates <- inner_join(df_hpvseq, df_ctdna_collectiondates_long, by = c("patient", "timepoint")) %>% rename(date = date_ctdna)
+df_cbct_dates <- df_cbctvolume %>% mutate(date = as.Date(ExamDate)) %>% filter(Roi == "x_GTVp_Tracking")
 
-# Create the plot with lighter individual lines and thicker average lines
-ggplot() +
-  # Lighter individual lines
-  geom_line(data = df_hpv_conc, aes(x = timepoint, y = percentchange_seq_copies, group = patient, color = overall_change), alpha = 0.3) +
-  # Thicker average lines
-  geom_line(data = average_lines, aes(x = timepoint, y = avg_percentchange_seq_copies, color = overall_change), size = 1.2) +
-  scale_color_manual(values = c("positive" = "seagreen", "negative" = "lightcoral")) +
-  labs(title = "Percent Change in HPV Sequence Copies Over Time",
-       x = "Timepoint",
-       y = "Percent Change in HPV Sequence Copies",
-       color = "Overall Change")
+# Filter df_hpvseq_dates to only include patients that exist in df_cbct_dates
+df_hpvseq_dates <- df_hpvseq_dates %>%
+  semi_join(df_cbct_dates, by = "patient")
 
+# Function to find the closest fraction date for each patient and timepoint
+find_closest_fraction <- function(patient, hpv_date) {
+  patient_cbct_dates <- df_cbct_dates %>% filter(patient == !!patient)
+  if (nrow(patient_cbct_dates) == 0) return(NA)
+  patient_cbct_dates <- patient_cbct_dates %>% mutate(date_diff = abs(difftime(date, hpv_date, units = "days")))
+  closest_fraction <- patient_cbct_dates %>% filter(date_diff == min(date_diff)) %>% select(fraction) %>% slice(1)
+  return(closest_fraction$fraction)
+}
 
-######## I filtered out the ones with Overall Change == NA 
+# Apply the function to each row in df_hpvseq_dates
+df_hpvseq_dates <- df_hpvseq_dates %>%
+  rowwise() %>%
+  mutate(fraction = find_closest_fraction(patient, date))
 
-df_hpv_conc_graph <- df_hpv_conc %>% filter(!is.na(overall_change))
+# Modify the fraction column based on the timepoint
+df_hpvseq_dates <- df_hpvseq_dates %>%
+  mutate(fraction = ifelse(timepoint == "followup", 40, fraction))
 
-# calculate average lines 
-average_lines <- df_hpv_conc_graph %>%
-  group_by(timepoint, overall_change) %>%
-  summarise(avg_percent_change = mean(percentchange_seq_copies, na.rm = TRUE)) %>%
-  ungroup()
+# Calculate log of seq_copies_mL
+df_hpvseq_dates <- df_hpvseq_dates %>%
+  mutate(seq_copies_mL_log = log1p(seq_copies_mL))
 
-# Create the plot with lighter individual lines and thicker average lines
-ggplot() +
-  # Lighter individual lines
-  geom_line(data = df_hpv_conc_graph, aes(x = timepoint, y = percentchange_seq_copies, group = patient, color = overall_change), alpha = 0.3) +
-  # Thicker average lines
-  geom_line(data = average_lines, aes(x = timepoint, y = avg_percent_change, color = overall_change), size = 4) +
-  scale_color_manual(values = c("positive" = "seagreen", "negative" = "lightcoral")) +
-  labs(title = "Percent Change in HPV Sequence Copies Over Time",
-       x = "Timepoint",
-       y = "Percent Change in HPV Sequence Copies",
-       color = "Overall Change") + facet_wrap(~overall_change)
+# Calculate percent change from baseline for each patient
+df_hpvseq_dates <- df_hpvseq_dates %>%
+  group_by(patient) %>%
+  arrange(fraction) %>%  # Ensure data is sorted by fraction within each patient group
+  mutate(
+    baseline_seq_log = first(seq_copies_mL_log, order_by = fraction),  # Get the first value as baseline
+    percent_hpvseq = (seq_copies_mL_log - baseline_seq_log) / baseline_seq_log * 100
+  ) %>%
+  ungroup() %>%
+  select(-baseline_seq_log)  # Remove the temporary baseline column
+
+# Classify percent change at follow-up as positive or negative
+ctdna_change_at_followup <- df_hpvseq_dates %>%
+  filter(timepoint == "followup") %>%
+  group_by(patient) %>%
+  summarize(overall_change_ctdna = ifelse(percent_hpvseq > 0, "positive", "negative"))
+
+# Convert `patient` column to character in both datasets
+df_filtered_gtv <- df_filtered_gtv %>%
+  mutate(Mrn = as.character(Mrn))
+
+ctdna_change_at_followup <- ctdna_change_at_followup %>%
+  mutate(patient = as.character(patient))
+
+# Merge the datasets on the patient identifier
+merged_data <- df_filtered_gtv %>%
+  left_join(ctdna_change_at_followup, by = c("Mrn" = "patient"))
+
+# Create the waterfall plot
+ggplot(merged_data, aes(x = reorder(Mrn, percent_vol), y = percent_vol, fill = overall_change_ctdna)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("positive" = "seagreen", "negative" = "lightcoral")) +
+  labs(title = "Waterfall Plot of Tumor Volume Change",
+       x = "Patient",
+       y = "Percent Change in Tumor Volume",
+       fill = "Overall Change in ctDNA") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
 
 ```
 
+
+```{r}
+
+
+```
