@@ -69,8 +69,8 @@ library(png)
 library(grid)
 library(ggridges)
 
-source("/Users/graceliu/bratman/timeseries/src/eric_analysis/hpv_dna_functions.R")
-source('/Users/graceliu/bratman/timeseries/src/eric_analysis/summary_functions.R')
+source("/Users/graceliu/bratman/timeseries/src/legacy/hpv_dna_functions.R")
+source('/Users/graceliu/bratman/timeseries/src/legacy/summary_functions.R')
 
 ####################
 # Set some options #
