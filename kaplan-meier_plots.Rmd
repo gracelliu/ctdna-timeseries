@@ -115,6 +115,30 @@ km1 <- plot_grid(
 ggsave("../results/Followup_PFS_KM.png", km1, width = 4, height = 3)
 
 ```
+
+```{r}
+df_clinical_radcure <- df_clinical_radcure %>% rename(Mrn = mrn)
+df_clinical_ctdna <- df_clinical_ctdna %>% rename(Mrn = mrn)
+```
+
+```{r}
+# Get the common Mrn values
+common_mrn <- intersect(df_cbctfate$Mrn, df_clinical_ctdna$Mrn)
+
+# Get the number of common Mrn values
+number_of_common_patients <- length(common_mrn)
+# Display the number of common patients
+print(number_of_common_patients)
+
+# df_cbctfate == 348
+# df_clinical_opc == 87
+# df_clinical_npc == 261
+
+87+261
+# 87 + 261 = 348 !!!
+
+```
+
   )
 
 ggsave("../results/Mid_PFS_KM.png", km1, width = 7, height = 3)
