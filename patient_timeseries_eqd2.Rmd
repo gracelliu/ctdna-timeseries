@@ -807,25 +807,6 @@ merged_data <- df_filtered_gtv %>%
 
 
 ```{r}
-# Inspect the data types and unique identifiers
-str(df_cbctvolume$patient)
-str(df_hpvseq_dates$patient)
-
-# Ensure there are no leading/trailing spaces and convert both to character
-df_filtered_gtv <- df_filtered_gtv %>%
-  mutate(Mrn = as.character(Mrn))
-
-df_hpvseq_dates <- df_hpvseq_dates %>%
-  mutate(patient = trimws(patient), patient = as.character(patient))
-
-# Calculate overall change in ctDNA and classify as positive or negative
-overall_ctdna_change <- df_hpvseq_dates %>%
-  group_by(patient) %>%
-  summarize(overall_change_ctdna = ifelse(last(seq_copies_mL_log) > first(seq_copies_mL_log), "positive", "negative"))
-
-# Merge the datasets on the patient identifier
-merged_data <- df_cbctvolume %>%
-  left_join(overall_ctdna_change, by = c("patient"))
 
 # Create the waterfall plot
 ggplot(merged_data, aes(x = reorder(Mrn, percent_vol), y = percent_vol, fill = overall_change_ctdna)) +
@@ -835,22 +816,22 @@ ggplot(merged_data, aes(x = reorder(Mrn, percent_vol), y = percent_vol, fill = o
        x = "Patient",
        y = "Percent Change in Tumor Volume",
        fill = "Overall Change in ctDNA") +
-  theme_minimal() +
   theme(axis.text.x = element_text(angle = 90, hjust = 1))
 
 ```
 
-
 ```{r}
-library(dplyr)
-library(ggplot2)
 
 
-# Merge the datasets on the patient identifier
-merged_data <- df_cbctvolume %>%
-  filter(Roi == "x_GTVp_Tracking" & cohort == "OPC") %>%
-  inner_join(df_hpvseq_dates, by = "patient")
-
+# Create the waterfall plot
+ggplot(merged_data, aes(x = reorder(patient, percent_hpvseq), y = percent_hpvseq, fill = overall_change_tumor)) +
+  geom_bar(stat = "patient") +
+  scale_fill_manual(values = c("positive" = "seagreen", "negative" = "lightcoral")) +
+  labs(title = "Waterfall Plot of ctDNA Change",
+       x = "Patient",
+       y = "Percent Change in ctDNA",
+       fill = "Overall Change in Tumor Volume") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
 
 ```
 
