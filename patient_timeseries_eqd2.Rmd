@@ -442,16 +442,15 @@ df_hpvseq_dates <- df_hpvseq_dates %>%
   select(-baseline_seq_log)  # Remove the temporary baseline column
 
 
-df_hpvseq_dates$timepoint <- factor(df_hpvseq_dates$timepoint, levels = c("baseline", "early", "mid", "followup"))
-
+# Create log ctDNA plot
 g <- ggplot(df_hpvseq_dates, aes(x = fraction, y = seq_copies_mL_log, group = patient)) +
-  geom_line(size = 0.1, color = 'gray30', na.rm = TRUE) + 
+  geom_line(size=0.1, color='gray30',na.rm = TRUE) + 
   geom_point(aes(color = timepoint), size = 1) +
   scale_color_manual(values = c(
-    "Baseline" = "#0072B2",
-    "Early RT" = "#D55E00",
-    "Mid RT" = "#CC79A7",
-    "Follow-up" = "#009E73"
+    "baseline" = "#0072B2",
+    "early" = "#D55E00",
+    "mid" = "#CC79A7",
+    "followup" = "#009E73"
   )) +
   scale_x_continuous(
     breaks = scales::pretty_breaks(n = 10)
@@ -465,15 +464,27 @@ g <- ggplot(df_hpvseq_dates, aes(x = fraction, y = seq_copies_mL_log, group = pa
 ggsave("../results/hpv_all.png", g, width = 5, height = 3)
 
 
+
+# Rename the timepoint values
+df_hpvseq_dates <- df_hpvseq_dates %>%
+  mutate(timepoint = recode(timepoint, 
+                            "baseline" = "Baseline", 
+                            "early" = "Early RT", 
+                            "mid" = "Mid RT", 
+                            "followup" = "Follow-up"))
+
+# Set the factor levels
+df_hpvseq_dates$timepoint <- factor(df_hpvseq_dates$timepoint, levels = c("Baseline", "Early RT", "Mid RT", "Follow-up"))
+
 # Create % change ctDNA plot
 g <- ggplot(df_hpvseq_dates, aes(x = fraction, y = percent_hpvseq, group = patient)) +
-  geom_line(size=0.1, color='gray30',na.rm = TRUE) + 
+  geom_line(size = 0.1, color = 'gray30', na.rm = TRUE) + 
   geom_point(aes(color = timepoint), size = 1) +
   scale_color_manual(values = c(
-    "baseline" = "#0072B2",
-    "early" = "#D55E00",
-    "mid" = "#CC79A7",
-    "followup" = "#009E73"
+    "Baseline" = "#0072B2",
+    "Early RT" = "#D55E00",
+    "Mid RT" = "#CC79A7",
+    "Follow-up" = "#009E73"
   )) +
   scale_x_continuous(
     breaks = scales::pretty_breaks(n = 10)
