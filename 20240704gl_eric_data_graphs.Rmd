@@ -336,10 +336,15 @@ ggplot() +
 # order positive and negative 
 df_filtered_gtv$overall_change <- factor(df_filtered_gtv$overall_change, levels = c("positive", "negative"))
 
+df_filtered_gtv <- df_filtered_gtv %>%
+  mutate(overall_change = recode(overall_change, 
+                            "positive" = "Positive", 
+                            "negative" = "Negative"))
+
 # Create the plot with lines colored based on overall change
 g1 <- ggplot(df_filtered_gtv, aes(x = fraction, y = percent_vol, group = Mrn, color = overall_change)) +
   geom_line(size = 0.2) +
-  scale_color_manual(values = c("positive" = "#78BBC1", "negative" = "#FFB296")) +
+  scale_color_manual(values = c("Positive" = "#78BBC1", "Negative" = "#FFB296")) +
   scale_x_continuous(
     breaks = scales::pretty_breaks(n = 10)
   ) +
@@ -348,6 +353,8 @@ g1 <- ggplot(df_filtered_gtv, aes(x = fraction, y = percent_vol, group = Mrn, co
        color = "Overall Change")
 
 ggsave("../results/GTV_all.png", g1, width = 5, height = 3)
+
+
 
 # Calculate the average lines for positive and negative changes
 average_lines <- df_filtered_gtv %>%
