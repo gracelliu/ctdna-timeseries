@@ -845,7 +845,7 @@ merged_data <- df_cbctvolume %>%
 # Create the scatter plot
 ggplot(merged_data, aes(x = gtv_primary, y = seq_copies_mL_log)) +
   geom_point() +
-  labs(title = "Scatter Plot of ctDNA vs. Tumor Volume ",
+  labs(title = "Scatter Plot of ctDNA vs. Tumour Volume ",
        x = "Tumor Volume",
        y = "ctDNA Concentration")
 

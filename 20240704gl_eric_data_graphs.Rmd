@@ -876,9 +876,9 @@ merged_data <- df_filtered_gtv %>%
 ggplot(merged_data, aes(x = reorder(Mrn, percent_vol), y = percent_vol, fill = overall_change_ctdna)) +
   geom_bar(stat = "identity") +
   scale_fill_manual(values = c("positive" = "seagreen", "negative" = "lightcoral")) +
-  labs(title = "Waterfall Plot of Tumor Volume Change",
+  labs(title = "Waterfall Plot of Tumour Volume Change",
        x = "Patient",
-       y = "Percent Change in Tumor Volume",
+       y = "Percent Change in Tumour Volume",
        fill = "Overall Change in ctDNA") +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 90, hjust = 1))
