@@ -836,6 +836,12 @@ ggplot(merged_data, aes(x = reorder(patient, percent_hpvseq), y = percent_hpvseq
 ```
 
 ```{r}
+
+# Merge the datasets on the patient identifier
+merged_data <- df_cbctvolume %>%
+  filter(Roi == "x_GTVp_Tracking" & cohort == "OPC" & fraction=="35") %>%
+  inner_join(df_hpvseq_dates, by = "patient")
+
 # Create the scatter plot
 ggplot(merged_data, aes(x = percent_vol, y = seq_copies_mL_log)) +
   geom_point() +
