@@ -7,32 +7,7 @@ output: html_document
 
 ## Midpoint
 
-```{r fig.width = 6, fig.height = 4}
-
-# Create plotdata_clinical_ctdna_inclusion dataframe focusing on Midpoint HPV DNA
-plotdata_clinical_ctdna_inclusion <- df_clinical_ctdna %>%
-  inner_join(
-    df_ctdna %>%
-      spread(timepoint, ctdna)
-  ) %>%
-  mutate(
-    inclusion_status = case_when(
-      is.na(`3 months`) | is.na(`Mid RT`) | `Mid RT` == 0 ~ 'Excluded',
-      TRUE ~ 'Included'
-    ) %>% factor(levels = c('Included', 'Excluded')),
-    exclusion_reason = case_when(
-      is.na(`3 months`) ~ 'Missing follow-up',
-      is.na(`Mid RT`) ~ 'Missing mid-RT',
-      `Mid RT` == 0 ~ 'No HPV ctDNA at Midpoint (excluded)',
-      TRUE ~ 'Included in all analyses'
-    ),
-    hpv_detectability_midpoint = case_when(
-      `Mid RT` == 0 ~ 'Undetectable',
-      TRUE ~ 'Detectable'
-    ),
-    midpoint_ctdna_level = if_else(`Mid RT` > median(`Mid RT`, na.rm = TRUE), 'Above Median', 'Below Median')
-  )
-
+```{r fig.width = 6, fig.height = 3}
 
 # Kaplan-Meier plots
 pd_survival_by_midpoint <- df_clinical_ctdna %>%
@@ -40,13 +15,18 @@ pd_survival_by_midpoint <- df_clinical_ctdna %>%
   mutate(
     midpoint_ctdna_level = if_else(ctdna_midrt > median(ctdna_midrt, na.rm = TRUE), 'Above Median', 'Below Median')
   )
-
 survfit_pfs_midpoint_detectable <- survfit(
   surv_progression ~ midpoint_ctdna_level,
   data = pd_survival_by_midpoint
 )
-p_surv_pfs_midpoint_detectable <- ggsurvplot(survfit_pfs_midpoint_detectable, pval = T) + ggtitle('PFS by Midpoint HPV DNA Level')
 
+# Plot with strata labels
+p_surv_pfs_midpoint_detectable <- ggsurvplot(
+  survfit_pfs_midpoint_detectable,
+  pval = TRUE,
+  legend.labs = c("Above Median", "Below Median"),
+  title = "PFS by Midpoint HPV DNA Level"
+)
 
 plot_grid(
   p_surv_pfs_midpoint_detectable$plot + theme(legend.position = 'none'),
