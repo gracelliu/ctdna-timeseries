@@ -888,6 +888,10 @@ ggplot(merged_data, aes(x = reorder(Mrn, percent_vol), y = percent_vol, fill = o
 
 
 ```{r}
+# count unique values in df_cbctfate 
+unique_count_df_cbctfate <- df_cbctfate %>% 
+  summarise(unique_count_df_cbctfate = n_distinct(Mrn))
 
+unique_count_df_cbctfate
 
 ```
