@@ -116,6 +116,11 @@ ggsave("../results/Followup_PFS_KM.png", km1, width = 4, height = 3)
 
 ```
 
+
+# KM Plots for GTV
+
+## preprocessing 
+
 ```{r}
 df_clinical_radcure <- df_clinical_radcure %>% rename(Mrn = mrn)
 df_clinical_ctdna <- df_clinical_ctdna %>% rename(Mrn = mrn)
@@ -139,13 +144,29 @@ print(number_of_common_patients)
 
 ```
 
+
+
+```{r}
+# Create column for event status
+# df_clinical_ctdna$status_progression
+df_clinical_ctdna <- df_clinical_ctdna %>%
+  mutate(status_progression = ifelse(progression == TRUE, 1, 0))
+
+# Time to event == df_clinical_ctdna$time_to_progression
+
   )
 
 ggsave("../results/Mid_PFS_KM.png", km1, width = 7, height = 3)
 
 ```
 
-# follow up
+
+
+
+
+# Previous work you should ignore
+
+## follow up
 
 ```{r fig.width = 14, fig.height = 6}
 # Create plotdata_clinical_ctdna_inclusion dataframe focusing on Midpoint HPV DNA and follow-up clearance
