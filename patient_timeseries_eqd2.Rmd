@@ -476,6 +476,10 @@ df_hpvseq_dates <- df_hpvseq_dates %>%
 # Set the factor levels
 df_hpvseq_dates$timepoint <- factor(df_hpvseq_dates$timepoint, levels = c("Baseline", "Early RT", "Mid RT", "Follow-up"))
 
+# Update the fraction values from 40 to 50; this is for follow-up on graph
+df_hpvseq_dates <- df_hpvseq_dates %>%
+  mutate(fraction = ifelse(fraction == 40, 50, fraction))
+
 # Create % change ctDNA plot
 g <- ggplot(df_hpvseq_dates, aes(x = fraction, y = percent_hpvseq, group = patient)) +
   geom_line(size = 0.1, color = 'gray30', na.rm = TRUE) + 
@@ -487,9 +491,10 @@ g <- ggplot(df_hpvseq_dates, aes(x = fraction, y = percent_hpvseq, group = patie
     "Follow-up" = "#009E73"
   )) +
   scale_x_continuous(
-    breaks = scales::pretty_breaks(n = 10)
+    breaks = c(seq(0, 35, by = 5), 50),
+    labels = c(seq(0, 35, by = 5), "Follow-up")
   ) +
-  labs(x = "Fraction", y = "Percent Change in HPV ctDNA []") 
+  labs(x = "Fraction", y = "Percent Change in HPV ctDNA []", color = "Timepoint") 
 
 # Save plot with specific dimensions
 ggsave("../results/change_hpv_all.png", g, width = 5, height = 3)
