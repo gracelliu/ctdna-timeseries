@@ -39,7 +39,7 @@ km1 <- plot_grid(
   rel_widths = c(7, 2)
 )
 
-ggsave("../results/Baseline_PFS_KM.png", km1, width = 4, height = 3)
+ggsave("../results/Baseline_PFS_KM.png", km1, width = 6, height = 3)
 
 ```
 
@@ -75,7 +75,7 @@ km1 <- plot_grid(
     rel_widths = c(7, 2)
   )
 
-ggsave("../results/Mid_PFS_KM.png", km1, width = 4, height = 3)
+ggsave("../results/Mid_PFS_KM.png", km1, width = 6, height = 3)
 
 ```
 
@@ -112,7 +112,7 @@ km1 <- plot_grid(
   rel_widths = c(7, 2)
 )
 
-ggsave("../results/Followup_PFS_KM.png", km1, width = 4, height = 3)
+ggsave("../results/Followup_PFS_KM.png", km1, width = 6, height = 3)
 
 ```
 
@@ -195,7 +195,7 @@ km1 <- plot_grid(
   rel_widths = c(7, 2)
 )
 
-ggsave("../results/Fraction1_GTV_KM.png", km1, width = 4, height = 3)
+ggsave("../results/Fraction1_GTV_KM.png", km1, width = 6, height = 3)
 
 ```
 
@@ -239,7 +239,7 @@ km15 <- plot_grid(
   rel_widths = c(7, 2)
 )
 
-ggsave("../results/Fraction15_GTV_KM.png", km15, width = 4, height = 3)
+ggsave("../results/Fraction15_GTV_KM.png", km15, width = 6, height = 3)
 
 ```
 
@@ -284,7 +284,7 @@ km20 <- plot_grid(
   rel_widths = c(7, 2)
 )
 
-ggsave("../results/Fraction20_GTV_KM.png", km20, width = 4, height = 3)
+ggsave("../results/Fraction20_GTV_KM.png", km20, width = 6, height = 3)
 
 ```
 
@@ -329,7 +329,7 @@ km34 <- plot_grid(
   rel_widths = c(7, 2)
 )
 
-ggsave("../results/Fraction34_GTV_KM.png", km34, width = 4, height = 3)
+ggsave("../results/Fraction34_GTV_KM.png", km34, width = 6, height = 3)
 
 ```
 
