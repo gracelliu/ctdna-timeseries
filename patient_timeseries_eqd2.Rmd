@@ -342,7 +342,7 @@ t_combined_plot <- ggarrange(
   font.label = list(size = 10, color = "black", face = "bold", family = NULL, position = "top")
 )
 t_annotated <- annotate_figure(t_combined_plot, 
-                               left = textGrob("Tumor Volume (GTV Primary)", rot = 90, vjust = 0.2, gp = gpar(cex = 1.3)),
+                               left = textGrob("Tumour Volume", rot = 90, vjust = 0.2, gp = gpar(cex = 1.3)),
                                bottom = textGrob("Tumour Stage (T)", gp = gpar(cex = 1.3)))
 
 # Combine Nodal Stage plots
@@ -355,12 +355,12 @@ n_combined_plot <- ggarrange(
   font.label = list(size = 10, color = "black", face = "bold", family = NULL, position = "top")
 )
 n_annotated <- annotate_figure(n_combined_plot, 
-                               left = textGrob("Tumor Volume (GTV Primary)", rot = 90, vjust = 0.2, gp = gpar(cex = 1.3)),
+                               left = textGrob("Tumour Volume", rot = 90, vjust = 0.2, gp = gpar(cex = 1.3)),
                                bottom = textGrob("Nodal Stage (N)", gp = gpar(cex = 1.3)))
 
 # Save the plots with specific dimensions
-ggsave("../results/tumor_volume_Tstage_plot.png", t_annotated, width = 6, height = 3)
-ggsave("../results/tumor_volume_Nstage_plot.png", n_annotated, width = 6, height = 3)
+ggsave("../results/tumor_volume_Tstage_plot.png", t_annotated, width = 7, height = 3)
+ggsave("../results/tumor_volume_Nstage_plot.png", n_annotated, width = 7, height = 3)
 
 
 ```
@@ -497,7 +497,7 @@ g <- ggplot(df_hpvseq_dates, aes(x = fraction, y = percent_hpvseq, group = patie
   labs(x = "Fraction", y = "Percent Change in HPV ctDNA []", color = "Timepoint") 
 
 # Save plot with specific dimensions
-ggsave("../results/change_hpv_all.png", g, width = 5, height = 3)
+ggsave("../results/change_hpv_all.png", g, width = 6, height = 3)
 
 ```
 

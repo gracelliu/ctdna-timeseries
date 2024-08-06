@@ -352,7 +352,7 @@ g1 <- ggplot(df_filtered_gtv, aes(x = fraction, y = percent_vol, group = Mrn, co
        y = "Percent Change in Tumor Volume",
        color = "Overall Change")
 
-ggsave("../results/GTV_all.png", g1, width = 5, height = 3)
+ggsave("../results/GTV_all.png", g1, width = 6, height = 3)
 
 
 
@@ -607,8 +607,8 @@ n_annotated <- annotate_figure(n_combined_plot,
                                left = textGrob("HPV ctDNA Copies", rot = 90, vjust = 0.2, gp = gpar(cex = 1.3)),
                                bottom = textGrob("Nodal Stage (N)", gp = gpar(cex = 1.3)))
 
-ggsave("../results/ctdna_Tstage_plot.png", t_annotated, width = 6, height = 3)
-ggsave("../results/ctdna_Nstage_plot.png", n_annotated, width = 6, height = 3)
+ggsave("../results/ctdna_Tstage_plot.png", t_annotated, width = 7, height = 3)
+ggsave("../results/ctdna_Nstage_plot.png", n_annotated, width = 7, height = 3)
 
 
 ```
