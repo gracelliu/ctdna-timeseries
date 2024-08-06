@@ -28,13 +28,16 @@ p_surv_pfs_midpoint_detectable <- ggsurvplot(
   title = "PFS by Midpoint HPV DNA Level"
 )
 
-plot_grid(
-  p_surv_pfs_midpoint_detectable$plot + theme(legend.position = 'none'),
-  get_legend(
-    p_surv_pfs_midpoint_detectable$plot + theme(legend.position = 'right')
+# Display plot
+km1 <- plot_grid(
+    p_surv_pfs_midpoint_detectable$plot + theme(legend.position = 'none'),
+    get_legend(
+      p_surv_pfs_midpoint_detectable$plot + theme(legend.position = 'right')
     ),
-  rel_widths = c(5,1)
-)
+    rel_widths = c(5, 2)
+  )
+
+ggsave("../results/Mid_PFS_KM.png", km1, width = 7, height = 3)
 
 ```
 
