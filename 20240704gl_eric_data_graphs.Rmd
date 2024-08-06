@@ -333,6 +333,9 @@ ggplot() +
 
 ```{r}
 
+# order positive and negative 
+df_filtered_gtv$overall_change <- factor(df_filtered_gtv$overall_change, levels = c("positive", "negative"))
+
 # Create the plot with lines colored based on overall change
 g1 <- ggplot(df_filtered_gtv, aes(x = fraction, y = percent_vol, group = Mrn, color = overall_change)) +
   geom_line(size = 0.2) +
