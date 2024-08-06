@@ -352,8 +352,8 @@ g1 <- ggplot(df_filtered_gtv, aes(x = fraction, y = percent_vol, group = Mrn, co
        y = "Percent Change in Tumor Volume",
        color = "Overall Change")
 
+print(g1)
 ggsave("../results/GTV_all.png", g1, width = 6, height = 3)
-
 
 
 # Calculate the average lines for positive and negative changes
@@ -373,7 +373,7 @@ g2 <- ggplot() +
        y = "Percent Change in Tumor Volume",
        color = "Overall Change")
 
-# Save plot with specific dimensions
+print(g2)
 ggsave("../results/avg_tumour_all.png", g2, width = 5, height = 3)
 
 ```
