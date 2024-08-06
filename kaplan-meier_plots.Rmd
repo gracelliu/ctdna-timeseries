@@ -109,3 +109,120 @@ plot_grid(
 )
 
 ```
+
+# follow up
+
+```{r fig.width = 14, fig.height = 6}
+# Create plotdata_clinical_ctdna_inclusion dataframe focusing on Midpoint HPV DNA and follow-up clearance
+plotdata_clinical_ctdna_inclusion <- df_clinical_ctdna %>%
+  inner_join(
+    df_ctdna %>%
+      spread(timepoint, ctdna)
+  ) %>%
+  mutate(
+    inclusion_status = case_when(
+      is.na(`3 months`) | is.na(`Mid RT`) | `Mid RT` == 0 ~ 'Excluded',
+      TRUE ~ 'Included'
+    ) %>% factor(levels = c('Included', 'Excluded')),
+    exclusion_reason = case_when(
+      is.na(`3 months`) ~ 'Missing follow-up',
+      is.na(`Mid RT`) ~ 'Missing mid-RT',
+      `Mid RT` == 0 ~ 'No HPV ctDNA at Midpoint (excluded)',
+      TRUE ~ 'Included in all analyses'
+    ),
+    hpv_detectability_midpoint = case_when(
+      `Mid RT` == 0 ~ 'Undetectable',
+      TRUE ~ 'Detectable'
+    ),
+    clearance_status = case_when(
+      `3 months` == 0 ~ 'Clearance',
+      `3 months` > 0 ~ 'No Clearance',
+      TRUE ~ NA_character_
+    )
+  )
+
+# Extract some variables
+val_smoking_status_by_clearance_status <- chisq.test(
+  x = plotdata_clinical_ctdna_inclusion$clearance_status,
+  y = plotdata_clinical_ctdna_inclusion$smoking_status
+) %>% .$p.value %>% signif(2)
+
+val_t_category_by_clearance_status <- chisq.test(
+  x = plotdata_clinical_ctdna_inclusion$clearance_status,
+  y = plotdata_clinical_ctdna_inclusion$stage_t_ajcc8
+) %>% .$p.value %>% signif(2)
+
+# Kaplan-Meier plots
+pd_survival_by_clearance <- df_clinical_ctdna %>%
+  left_join(df_ctdna_wide) %>%
+  mutate(
+    clearance_status = case_when(
+      `ctdna_3months` == 0 ~ 'Clearance',
+      `ctdna_3months` > 0 ~ 'No Clearance',
+      TRUE ~ NA_character_
+    )
+  )
+
+survfit_rfs_clearance <- survfit(
+  surv_recurrence ~ clearance_status,
+  data = pd_survival_by_clearance
+)
+p_surv_rfs_clearance <- ggsurvplot(survfit_rfs_clearance, pval = T) + ggtitle('RFS by HPV DNA Clearance Status at Follow-up')
+
+survfit_pfs_clearance <- survfit(
+  surv_progression ~ clearance_status,
+  data = pd_survival_by_clearance
+)
+p_surv_pfs_clearance <- ggsurvplot(survfit_pfs_clearance, pval = T) + ggtitle('PFS by HPV DNA Clearance Status at Follow-up')
+
+survfit_os_clearance <- survfit(
+  surv_overall ~ clearance_status,
+  data = df_clinical_ctdna %>%
+    left_join(df_ctdna_wide) %>%
+    mutate(
+      clearance_status = case_when(
+        `ctdna_3months` == 0 ~ 'Clearance',
+        `ctdna_3months` > 0 ~ 'No Clearance',
+        TRUE ~ NA_character_
+      )
+    )
+)
+p_surv_os_clearance <- ggsurvplot(survfit_os_clearance, pval = T) + ggtitle('OS by HPV DNA Clearance Status at Follow-up')
+
+survfit_rfs_included <- survfit(
+  surv_recurrence ~ included,
+  data = df_clinical_ctdna %>% mutate(included = ! patient %in% df_exclude$patient)
+)
+p_surv_rfs_by_inclusion <- ggsurvplot(survfit_rfs_included, pval=T) + ggtitle('RFS by inclusion status')
+
+survfit_pfs_included <- survfit(
+  surv_progression ~ included,
+  data = df_clinical_ctdna %>% mutate(included = ! patient %in% df_exclude$patient)
+)
+p_surv_pfs_by_inclusion <- ggsurvplot(survfit_pfs_included, pval=T) + ggtitle('PFS by inclusion status')
+
+survfit_os_included <- survfit(
+  surv_overall ~ included,
+  data = df_clinical_ctdna %>% mutate(included = ! patient %in% df_exclude$patient)
+)
+p_surv_os_by_inclusion <- ggsurvplot(survfit_os_included, pval=T) + ggtitle('OS by inclusion status')
+
+plot_grid(
+  p_surv_rfs_clearance$plot + theme(legend.position = 'none'),
+  p_surv_pfs_clearance$plot + theme(legend.position = 'none'),
+  p_surv_os_clearance$plot + theme(legend.position = 'none'),
+  get_legend(
+    p_surv_os_clearance$plot + theme(legend.position = 'right')
+  ),
+  p_surv_rfs_by_inclusion$plot + theme(legend.position = 'none'),
+  p_surv_pfs_by_inclusion$plot + theme(legend.position = 'none'),
+  p_surv_os_by_inclusion$plot + theme(legend.position = 'none'),
+  get_legend(
+    p_surv_os_by_inclusion$plot + theme(legend.position = 'right')
+  ),
+  ncol = 4,
+  rel_widths = c(2,2,2,1)
+)
+
+
+```
