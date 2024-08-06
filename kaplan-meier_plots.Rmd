@@ -62,8 +62,8 @@ survfit_pfs_midpoint_detectable <- survfit(
 p_surv_pfs_midpoint_detectable <- ggsurvplot(
   survfit_pfs_midpoint_detectable,
   pval = TRUE,
-  legend.labs = c("Above Median", "Below Median"),
-  title = "PFS by Midpoint HPV DNA Level"
+  legend.labs = c("Above\nMedian", "Below\nMedian"),
+  title = "PFS by Mid RT HPV DNA"
 )
 
 # Display plot
