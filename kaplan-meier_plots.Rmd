@@ -72,7 +72,13 @@ km1 <- plot_grid(
     get_legend(
       p_surv_pfs_midpoint_detectable$plot + theme(legend.position = 'right')
     ),
-    rel_widths = c(5, 2)
+    rel_widths = c(7, 2)
+  )
+
+ggsave("../results/Mid_PFS_KM.png", km1, width = 4, height = 3)
+
+```
+
 
 ## Followup
 
