@@ -73,6 +73,42 @@ km1 <- plot_grid(
       p_surv_pfs_midpoint_detectable$plot + theme(legend.position = 'right')
     ),
     rel_widths = c(5, 2)
+
+## Followup
+
+```{r}
+# Kaplan-Meier plots
+pd_survival_by_followup <- df_clinical_ctdna %>%
+  left_join(df_ctdna_wide) %>%
+  mutate(
+    followup_ctdna_level = if_else(ctdna_3months > median(ctdna_3months, na.rm = TRUE), 'Above Median', 'Below Median')
+  )
+
+survfit_pfs_followup_detectable <- survfit(
+  surv_progression ~ followup_ctdna_level,
+  data = pd_survival_by_followup
+)
+
+# Plot with strata labels
+p_surv_pfs_followup_detectable <- ggsurvplot(
+  survfit_pfs_followup_detectable,
+  pval = TRUE,
+  legend.labs = c("Above\nMedian", "Below\nMedian"),
+  title = "PFS by Follow-up HPV DNA"
+)
+
+# Display plot
+km1 <- plot_grid(
+  p_surv_pfs_followup_detectable$plot + theme(legend.position = 'none'),
+  get_legend(
+    p_surv_pfs_followup_detectable$plot + theme(legend.position = 'right')
+  ),
+  rel_widths = c(7, 2)
+)
+
+ggsave("../results/Followup_PFS_KM.png", km1, width = 4, height = 3)
+
+```
   )
 
 ggsave("../results/Mid_PFS_KM.png", km1, width = 7, height = 3)
