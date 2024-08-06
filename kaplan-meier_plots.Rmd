@@ -7,7 +7,7 @@ output: html_document
 
 ## Midpoint
 
-```{r fig.width = 14, fig.height = 6}
+```{r fig.width = 6, fig.height = 4}
 
 # Create plotdata_clinical_ctdna_inclusion dataframe focusing on Midpoint HPV DNA
 plotdata_clinical_ctdna_inclusion <- df_clinical_ctdna %>%
@@ -33,16 +33,6 @@ plotdata_clinical_ctdna_inclusion <- df_clinical_ctdna %>%
     midpoint_ctdna_level = if_else(`Mid RT` > median(`Mid RT`, na.rm = TRUE), 'Above Median', 'Below Median')
   )
 
-# Extract some variables
-val_smoking_status_by_hpv_detectability_midpoint <- chisq.test(
-  x = plotdata_clinical_ctdna_inclusion$hpv_detectability_midpoint,
-  y = plotdata_clinical_ctdna_inclusion$smoking_status
-) %>% .$p.value %>% signif(2)
-
-val_t_category_by_hpv_detectability_midpoint <- chisq.test(
-  x = plotdata_clinical_ctdna_inclusion$hpv_detectability_midpoint,
-  y = plotdata_clinical_ctdna_inclusion$stage_t_ajcc8
-) %>% .$p.value %>% signif(2)
 
 # Kaplan-Meier plots
 pd_survival_by_midpoint <- df_clinical_ctdna %>%
@@ -51,61 +41,19 @@ pd_survival_by_midpoint <- df_clinical_ctdna %>%
     midpoint_ctdna_level = if_else(ctdna_midrt > median(ctdna_midrt, na.rm = TRUE), 'Above Median', 'Below Median')
   )
 
-survfit_rfs_midpoint_detectable <- survfit(
-  surv_recurrence ~ midpoint_ctdna_level,
-  data = pd_survival_by_midpoint
-)
-p_surv_rfs_midpoint_detectable <- ggsurvplot(survfit_rfs_midpoint_detectable, pval = T) + ggtitle('RFS by Midpoint HPV DNA Level')
-
 survfit_pfs_midpoint_detectable <- survfit(
   surv_progression ~ midpoint_ctdna_level,
   data = pd_survival_by_midpoint
 )
 p_surv_pfs_midpoint_detectable <- ggsurvplot(survfit_pfs_midpoint_detectable, pval = T) + ggtitle('PFS by Midpoint HPV DNA Level')
 
-survfit_os_midpoint_detectable <- survfit(
-  surv_overall ~ midpoint_ctdna_level,
-  data = df_clinical_ctdna %>%
-    left_join(df_ctdna_wide) %>%
-    mutate(
-      midpoint_ctdna_level = if_else(ctdna_midrt > median(ctdna_midrt, na.rm = TRUE), 'Above Median', 'Below Median')
-    )
-)
-p_surv_os_midpoint_detectable <- ggsurvplot(survfit_os_midpoint_detectable, pval = T) + ggtitle('OS by Midpoint HPV DNA Level')
-
-survfit_rfs_included <- survfit(
-  surv_recurrence ~ included,
-  data = df_clinical_ctdna %>% mutate(included = ! patient %in% df_exclude$patient)
-)
-p_surv_rfs_by_inclusion <- ggsurvplot(survfit_rfs_included, pval=T) + ggtitle('RFS by inclusion status')
-
-survfit_pfs_included <- survfit(
-  surv_progression ~ included,
-  data = df_clinical_ctdna %>% mutate(included = ! patient %in% df_exclude$patient)
-)
-p_surv_pfs_by_inclusion <- ggsurvplot(survfit_pfs_included, pval=T) + ggtitle('PFS by inclusion status')
-
-survfit_os_included <- survfit(
-  surv_overall ~ included,
-  data = df_clinical_ctdna %>% mutate(included = ! patient %in% df_exclude$patient)
-)
-p_surv_os_by_inclusion <- ggsurvplot(survfit_os_included, pval=T) + ggtitle('OS by inclusion status')
 
 plot_grid(
-  p_surv_rfs_midpoint_detectable$plot + theme(legend.position = 'none'),
   p_surv_pfs_midpoint_detectable$plot + theme(legend.position = 'none'),
-  p_surv_os_midpoint_detectable$plot + theme(legend.position = 'none'),
   get_legend(
-    p_surv_os_midpoint_detectable$plot + theme(legend.position = 'right')
-  ),
-  p_surv_rfs_by_inclusion$plot + theme(legend.position = 'none'),
-  p_surv_pfs_by_inclusion$plot + theme(legend.position = 'none'),
-  p_surv_os_by_inclusion$plot + theme(legend.position = 'none'),
-  get_legend(
-    p_surv_os_by_inclusion$plot + theme(legend.position = 'right')
-  ),
-  ncol = 4,
-  rel_widths = c(2,2,2,1)
+    p_surv_pfs_midpoint_detectable$plot + theme(legend.position = 'right')
+    ),
+  rel_widths = c(5,1)
 )
 
 ```
