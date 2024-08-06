@@ -308,3 +308,88 @@ plot_grid(
 )
 
 ```
+
+## Change between midpoint to followup
+
+```{r fig.width = 14, fig.height = 6}
+
+# Create plotdata_clinical_ctdna_inclusion dataframe focusing on Midpoint HPV DNA and follow-up clearance
+plotdata_clinical_ctdna_inclusion <- df_clinical_ctdna %>%
+  inner_join(
+    df_ctdna %>%
+      spread(timepoint, ctdna)
+  ) %>%
+  mutate(
+    inclusion_status = case_when(
+      is.na(`3 months`) | is.na(`Mid RT`) | `Mid RT` == 0 ~ 'Excluded',
+      TRUE ~ 'Included'
+    ) %>% factor(levels = c('Included', 'Excluded')),
+    exclusion_reason = case_when(
+      is.na(`3 months`) ~ 'Missing follow-up',
+      is.na(`Mid RT`) ~ 'Missing mid-RT',
+      `Mid RT` == 0 ~ 'No HPV ctDNA at Midpoint (excluded)',
+      TRUE ~ 'Included in all analyses'
+    ),
+    hpv_detectability_midpoint = case_when(
+      `Mid RT` == 0 ~ 'Undetectable',
+      TRUE ~ 'Detectable'
+    ),
+    change_mid_followup = `3 months` - `Mid RT`,
+    change_group = if_else(change_mid_followup > median(change_mid_followup, na.rm = TRUE), 'Above Median', 'Below Median')
+  )
+
+# Extract some variables
+val_smoking_status_by_change_group <- chisq.test(
+  x = plotdata_clinical_ctdna_inclusion$change_group,
+  y = plotdata_clinical_ctdna_inclusion$smoking_status
+) %>% .$p.value %>% signif(2)
+
+val_t_category_by_change_group <- chisq.test(
+  x = plotdata_clinical_ctdna_inclusion$change_group,
+  y = plotdata_clinical_ctdna_inclusion$stage_t_ajcc8
+) %>% .$p.value %>% signif(2)
+
+# Kaplan-Meier plots
+pd_survival_by_change_group <- df_clinical_ctdna %>%
+  left_join(df_ctdna_wide) %>%
+  mutate(
+    change_mid_followup = ctdna_3months - ctdna_midrt,
+    change_group = if_else(change_mid_followup > median(change_mid_followup, na.rm = TRUE), 'Above Median', 'Below Median')
+  )
+
+survfit_rfs_change_group <- survfit(
+  surv_recurrence ~ change_group,
+  data = pd_survival_by_change_group
+)
+p_surv_rfs_change_group <- ggsurvplot(survfit_rfs_change_group, pval = T) + ggtitle('RFS by Change in HPV DNA from Midpoint to Follow-up')
+
+survfit_pfs_change_group <- survfit(
+  surv_progression ~ change_group,
+  data = pd_survival_by_change_group
+)
+p_surv_pfs_change_group <- ggsurvplot(survfit_pfs_change_group, pval = T) + ggtitle('PFS by Change in HPV DNA from Midpoint to Follow-up')
+
+survfit_os_change_group <- survfit(
+  surv_overall ~ change_group,
+  data = df_clinical_ctdna %>%
+    left_join(df_ctdna_wide) %>%
+    mutate(
+      change_mid_followup = ctdna_3months - ctdna_midrt,
+      change_group = if_else(change_mid_followup > median(change_mid_followup, na.rm = TRUE), 'Above Median', 'Below Median')
+    )
+)
+p_surv_os_change_group <- ggsurvplot(survfit_os_change_group, pval = T) + ggtitle('OS by Change in HPV DNA from Midpoint to Follow-up')
+
+plot_grid(
+  p_surv_rfs_change_group$plot + theme(legend.position = 'none'),
+  p_surv_pfs_change_group$plot + theme(legend.position = 'none'),
+  p_surv_os_change_group$plot + theme(legend.position = 'none'),
+  get_legend(
+    p_surv_os_change_group$plot + theme(legend.position = 'right')
+  ),
+  ncol = 3,
+  rel_widths = c(2, 2, 2, 1)
+)
+
+```
+
