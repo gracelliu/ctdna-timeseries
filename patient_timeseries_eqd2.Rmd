@@ -309,14 +309,16 @@ create_combined_plots <- function(df_cbctvolume, fraction_label, fill_color) {
     filter(Roi == 'x_GTVp_Tracking') %>%
     ggplot(aes(x = stage_t_ajcc8, y = gtv_primary)) +
     geom_boxplot(fill = fill_color) +
-    labs(title = fraction_label, x = NULL, y = NULL)
+    labs(title = fraction_label, x = NULL, y = NULL) +
+    stat_compare_means(size = 2.5)
 
   # Tumor volume by N Stage
   n_stage_plot <- df_cbctvolume %>%
     filter(Roi == 'x_GTVp_Tracking') %>%
     ggplot(aes(x = stage_n_ajcc8, y = gtv_primary)) +
     geom_boxplot(fill = fill_color) +
-    labs(title = fraction_label, x = NULL, y = NULL) 
+    labs(title = fraction_label, x = NULL, y = NULL) +
+    stat_compare_means(size = 2.5)
   
   return(list(t_stage_plot = t_stage_plot, n_stage_plot = n_stage_plot))
 }
