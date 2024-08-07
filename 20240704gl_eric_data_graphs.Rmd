@@ -353,8 +353,11 @@ g1 <- ggplot(df_filtered_gtv, aes(x = fraction, y = percent_vol, group = Mrn, co
        color = "Overall Change")
 
 print(g1)
-ggsave("../results/GTV_all.png", g1, width = 6, height = 3)
+ggsave("../results/GTV_all.png", g1, width = 6.6, height = 3.3)
 
+```
+
+```{r}
 
 # Calculate the average lines for positive and negative changes
 average_lines <- df_filtered_gtv %>%
@@ -553,12 +556,14 @@ df_3_month <- df_hpv_conc %>%
 # Sequence copies by T Stage 
 t_baseline <- ggplot(df_baseline, aes(x = stage_t_ajcc8, y = seq_copies_mL_log)) +
   geom_boxplot(fill="antiquewhite4") +
-  labs(title = "Baseline", x=NULL, y=NULL)
+  labs(title = "Baseline", x=NULL, y=NULL) +
+  stat_compare_means(size = 2.5)
 
 # Sequence copies by N Stage 
 n_baseline <- ggplot(df_baseline, aes(x = stage_n_ajcc8, y = seq_copies_mL_log)) +
   geom_boxplot(fill="antiquewhite4") +
-  labs(title = "Baseline", x=NULL, y=NULL)
+  labs(title = "Baseline", x=NULL, y=NULL) +
+  stat_compare_means(size = 2.5)
 
 
 #### Early RT
@@ -566,24 +571,28 @@ n_baseline <- ggplot(df_baseline, aes(x = stage_n_ajcc8, y = seq_copies_mL_log))
 # Sequence copies by T Stage 
 t_early <- ggplot(df_early_rt, aes(x = stage_t_ajcc8, y = seq_copies_mL_log)) +
   geom_boxplot(fill="antiquewhite3") +
-  labs(title = "Early RT", x=NULL, y=NULL)
+  labs(title = "Early RT", x=NULL, y=NULL) +
+  stat_compare_means(size = 2.5)
 
 # Sequence copies by N Stage
 n_early <- ggplot(df_early_rt, aes(x = stage_n_ajcc8, y = seq_copies_mL_log)) +
   geom_boxplot(fill="antiquewhite3") +
-  labs(title = "Early RT", x=NULL, y=NULL)
+  labs(title = "Early RT", x=NULL, y=NULL) +
+  stat_compare_means(size = 2.5)
 
 #### Mid RT
 
 # Sequence copies by T Stage 
 t_mid <- ggplot(df_mid_rt, aes(x = stage_t_ajcc8, y = seq_copies_mL_log)) +
   geom_boxplot(fill="antiquewhite2") +
-  labs(title = "Mid RT", x=NULL, y=NULL)
+  labs(title = "Mid RT", x=NULL, y=NULL) +
+  stat_compare_means(size = 2.5)
 
 # Sequence copies by N Stage 
 n_mid <- ggplot(df_mid_rt, aes(x = stage_n_ajcc8, y = seq_copies_mL_log)) +
   geom_boxplot(fill="antiquewhite2") +
-  labs(title = "Mid RT", x=NULL, y=NULL)
+  labs(title = "Mid RT", x=NULL, y=NULL) +
+  stat_compare_means(size = 2.5)
 
 
 t_combined_plot <- ggarrange(t_baseline, t_early, t_mid,
