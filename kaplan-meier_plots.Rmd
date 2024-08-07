@@ -380,6 +380,45 @@ ggsave("../results/Fraction35_GTV_KM.png", km35, width = 6, height = 3)
 
 
 
+# combining graphs
+
+```{r}
+
+
+km_first <- plot_grid(
+  p_surv_pfs_fraction1_detectable$plot + theme(legend.position = 'none'),
+  p_surv_pfs_baseline_detectable$plot + theme(legend.position = 'none'),
+  get_legend(
+    p_surv_pfs_baseline_detectable$plot + theme(legend.position = 'right')
+  ),
+  ncol = 3,
+  rel_widths = c(6, 6, 2)
+)
+
+plot1 <- km1 + km_baseline
+print(plot1)
+
+# ggsave("../results/KM_ONE.png", km_first, width = 12, height = 3)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # Previous work you should ignore
 
