@@ -31,7 +31,7 @@ p_surv_pfs_baseline_detectable <- ggsurvplot(
 )
 
 # Display plot
-km1 <- plot_grid(
+km_baseline <- plot_grid(
   p_surv_pfs_baseline_detectable$plot + theme(legend.position = 'none'),
   get_legend(
     p_surv_pfs_baseline_detectable$plot + theme(legend.position = 'right')
@@ -39,7 +39,7 @@ km1 <- plot_grid(
   rel_widths = c(7, 2)
 )
 
-ggsave("../results/Baseline_PFS_KM.png", km1, width = 6, height = 3)
+ggsave("../results/Baseline_HPV_KM.png", km_baseline, width = 6, height = 3.6)
 
 ```
 
@@ -67,7 +67,7 @@ p_surv_pfs_midpoint_detectable <- ggsurvplot(
 )
 
 # Display plot
-km1 <- plot_grid(
+km_mid <- plot_grid(
     p_surv_pfs_midpoint_detectable$plot + theme(legend.position = 'none'),
     get_legend(
       p_surv_pfs_midpoint_detectable$plot + theme(legend.position = 'right')
@@ -75,7 +75,7 @@ km1 <- plot_grid(
     rel_widths = c(7, 2)
   )
 
-ggsave("../results/Mid_PFS_KM.png", km1, width = 6, height = 3)
+ggsave("../results/Mid_HPV_KM.png", km_mid, width = 6, height = 3.6)
 
 ```
 
@@ -104,7 +104,7 @@ p_surv_pfs_followup_detectable <- ggsurvplot(
 )
 
 # Display plot
-km1 <- plot_grid(
+km_followup <- plot_grid(
   p_surv_pfs_followup_detectable$plot + theme(legend.position = 'none'),
   get_legend(
     p_surv_pfs_followup_detectable$plot + theme(legend.position = 'right')
@@ -112,7 +112,7 @@ km1 <- plot_grid(
   rel_widths = c(7, 2)
 )
 
-ggsave("../results/Followup_PFS_KM.png", km1, width = 6, height = 3)
+ggsave("../results/Followup_HPV_KM.png", km_followup, width = 6, height = 3.6)
 
 ```
 
@@ -121,7 +121,7 @@ ggsave("../results/Followup_PFS_KM.png", km1, width = 6, height = 3)
 
 ## preprocessing 
 
-```{r}
+```{r eval=FALSE}
 df_clinical_radcure <- df_clinical_radcure %>% rename(Mrn = mrn)
 df_clinical_ctdna <- df_clinical_ctdna %>% rename(Mrn = mrn)
 ```
@@ -195,7 +195,7 @@ km1 <- plot_grid(
   rel_widths = c(7, 2)
 )
 
-ggsave("../results/Fraction1_GTV_KM.png", km1, width = 6, height = 3)
+ggsave("../results/Fraction1_GTV_KM.png", km1, width = 6, height = 3.6)
 
 ```
 
@@ -239,7 +239,7 @@ km15 <- plot_grid(
   rel_widths = c(7, 2)
 )
 
-ggsave("../results/Fraction15_GTV_KM.png", km15, width = 6, height = 3)
+ggsave("../results/Fraction15_GTV_KM.png", km15, width = 6, height = 3.6)
 
 ```
 
@@ -329,7 +329,7 @@ km34 <- plot_grid(
   rel_widths = c(7, 2)
 )
 
-ggsave("../results/Fraction34_GTV_KM.png", km34, width = 6, height = 3)
+ggsave("../results/Fraction34_GTV_KM.png", km34, width = 6, height = 3.6)
 
 ```
 
@@ -374,7 +374,7 @@ km35 <- plot_grid(
   rel_widths = c(7, 2)
 )
 
-ggsave("../results/Fraction35_GTV_KM.png", km35, width = 6, height = 3)
+ggsave("../results/Fraction35_GTV_KM.png", km35, width = 6, height = 3.6)
 
 ```
 
