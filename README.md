@@ -1,3 +1,3 @@
 My R code 
 
-![](mbp_poster_grace.pdf)
+![](mbp_poster_grace.png)
